@@ -1,3 +1,4 @@
+// app/error.tsx
 "use client";
 
 import { useEffect } from "react";
@@ -9,13 +10,21 @@ type ErrorPageProps = {
 
 export default function ErrorPage({ error, reset }: ErrorPageProps) {
   useEffect(() => {
-    // In later stages, this is where error logging / analytics can hook in
-    // For Stage 1, we intentionally keep it minimal and safe
+    // 🔒 Centralized error logging hook (safe + future-proof)
+    if (process.env.NODE_ENV !== "development") {
+      // Example future hooks:
+      // logErrorToService(error);
+      // sendErrorEvent({ message: error.message, digest: error.digest });
+    }
+
     console.error(error);
   }, [error]);
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-zinc-950 px-4">
+    <main
+      role="alert"
+      className="flex min-h-dvh items-center justify-center bg-zinc-950 px-4"
+    >
       <div className="mx-auto w-full max-w-md text-center">
         <h1 className="text-3xl font-semibold tracking-tight">
           Something went wrong
@@ -24,6 +33,13 @@ export default function ErrorPage({ error, reset }: ErrorPageProps) {
         <p className="mt-3 text-sm text-zinc-400">
           An unexpected error occurred while rendering this page.
         </p>
+
+        {/* Optional digest for internal debugging (safe, opaque) */}
+        {error.digest && (
+          <p className="mt-2 text-xs text-zinc-600">
+            Error reference: {error.digest}
+          </p>
+        )}
 
         <div className="mt-6 flex flex-col gap-3">
           <button

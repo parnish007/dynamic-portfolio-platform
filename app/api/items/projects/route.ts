@@ -88,6 +88,10 @@ function getClientIp(request: Request): string {
 /**
  * Best-effort in-memory rate limiter (per IP).
  * 120 requests per minute.
+ *
+ * NOTE:
+ * This is not reliable in serverless/multi-instance environments.
+ * Treat it as "best effort" only.
  */
 type RateEntry = { tokens: number; lastRefillMs: number };
 const RATE_LIMIT_GLOBAL_KEY = "__portfolio_items_projects_rate_limit__";
@@ -135,9 +139,9 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
+  // ✅ SECURITY: public endpoint MUST NOT use SERVICE_ROLE
+  // Use ANON only; rely on RLS for public visibility.
   const key =
-    // Prefer server-side key for reading drafts/admin-only rows, if you allow it.
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
     process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
     "";
@@ -153,13 +157,27 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
   return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), table };
 }
 
+/**
+ * PostgREST supports ONLY ONE `or` query param.
+ * So we build ONE combined `or=(...)` string.
+ */
+function buildCombinedOr(orGroups: string[]): string | null {
+  const cleaned = orGroups.map((g) => g.trim()).filter((g) => g.length > 0);
+  if (cleaned.length === 0) {
+    return null;
+  }
+  // Each group should already be something like:
+  // "title.ilike.%x%,summary.ilike.%x%"
+  // We merge them with commas.
+  return `(${cleaned.join(",")})`;
+}
+
 function buildPostgrestUrl(args: {
   baseUrl: string;
   table: string;
   select: string;
   filters: Array<{ key: string; value: string }>;
   order?: string;
-  range?: { from: number; to: number };
 }): URL {
   const url = new URL(`${args.baseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
   url.searchParams.set("select", args.select);
@@ -170,12 +188,6 @@ function buildPostgrestUrl(args: {
 
   if (isNonEmptyString(args.order)) {
     url.searchParams.set("order", args.order);
-  }
-
-  if (args.range) {
-    // Range is set via headers for PostgREST, but we keep it here for clarity.
-    // Actual range header is applied in fetch.
-    url.searchParams.set("_range", `${args.range.from}-${args.range.to}`);
   }
 
   return url;
@@ -271,7 +283,8 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error:
+          "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_ANON_KEY).",
       },
       { status: 500 },
     );
@@ -279,14 +292,6 @@ export async function GET(request: Request): Promise<Response> {
 
   const url = new URL(request.url);
 
-  // Supported query params:
-  // - id: exact id
-  // - slug: exact slug
-  // - published: true/false (defaults to true for public usage)
-  // - featured: true/false
-  // - q: search text (title/summary/description)
-  // - tags: csv list (best-effort contains match via ilike on a joined string field if tags is stored as text)
-  // - limit, offset
   const id = url.searchParams.get("id");
   const slug = url.searchParams.get("slug");
   const publishedParam = url.searchParams.get("published");
@@ -310,7 +315,7 @@ export async function GET(request: Request): Promise<Response> {
     filters.push({ key: "slug", value: `eq.${slug.trim()}` });
   }
 
-  // Default behavior: only published items unless caller explicitly overrides.
+  // Default: only published
   if (published === undefined) {
     filters.push({ key: "is_published", value: "eq.true" });
   } else {
@@ -321,34 +326,29 @@ export async function GET(request: Request): Promise<Response> {
     filters.push({ key: "is_featured", value: `eq.${featured ? "true" : "false"}` });
   }
 
-  // Best-effort text search (works even without FTS).
-  // If your DB uses different columns, it still returns rows; this is additive filtering via OR.
+  // ✅ Combine OR filters safely into ONE `or=(...)`
+  const orGroups: string[] = [];
+
   if (isNonEmptyString(q)) {
     const query = q.trim().slice(0, 120).replaceAll(",", " ");
     const pattern = `%${query}%`;
 
-    // PostgREST OR filter syntax:
-    // or=(title.ilike.%foo%,summary.ilike.%foo%,description.ilike.%foo%)
-    filters.push({
-      key: "or",
-      value: `(title.ilike.${pattern},summary.ilike.${pattern},description.ilike.${pattern})`,
-    });
+    orGroups.push(
+      `title.ilike.${pattern},summary.ilike.${pattern},description.ilike.${pattern}`,
+    );
   }
 
-  // Tags filter is schema-dependent. We do a conservative best-effort:
-  // - If you store tags as text[]: use "cs" (contains) is not universal; may fail depending on PostgREST config.
-  // - If tags are stored as JSON/array: this may work in Supabase (depends on column type).
-  // - We also fall back to ilike on a `tags_text` string column if present.
   if (tags && tags.length > 0) {
-    // Try tags contains for array/json (works for Postgres array & jsonb in many Supabase setups).
-    // We match ANY tag by OR-ing multiple contains checks.
-    const tagFilters = tags.map((t) => `tags.cs.{${t.replaceAll("}", "").replaceAll("{", "")}}`);
-    const tagTextFilters = tags.map((t) => `tags_text.ilike.%${t}%`);
+    const safeTags = tags.map((t) => t.replaceAll("{", "").replaceAll("}", ""));
+    const tagFilters = safeTags.map((t) => `tags.cs.{${t}}`);
+    const tagTextFilters = safeTags.map((t) => `tags_text.ilike.%${t}%`);
 
-    filters.push({
-      key: "or",
-      value: `(${[...tagFilters, ...tagTextFilters].join(",")})`,
-    });
+    orGroups.push([...tagFilters, ...tagTextFilters].join(","));
+  }
+
+  const combinedOr = buildCombinedOr(orGroups);
+  if (combinedOr) {
+    filters.push({ key: "or", value: combinedOr });
   }
 
   const order = "order_index.asc,updated_at.desc,created_at.desc";
@@ -362,7 +362,6 @@ export async function GET(request: Request): Promise<Response> {
     select: "*",
     filters,
     order,
-    range: { from: rangeFrom, to: rangeTo },
   });
 
   try {
@@ -372,7 +371,7 @@ export async function GET(request: Request): Promise<Response> {
         apikey: cfg.key,
         Authorization: `Bearer ${cfg.key}`,
         Accept: "application/json",
-        // PostgREST range pagination header:
+        // ✅ Range must be a header for PostgREST
         Range: `${rangeFrom}-${rangeTo}`,
         Prefer: "count=exact",
       },
@@ -392,7 +391,7 @@ export async function GET(request: Request): Promise<Response> {
     }
 
     const rows = (await res.json()) as Array<Record<string, unknown>>;
-    const contentRange = res.headers.get("content-range"); // e.g. 0-23/120
+    const contentRange = res.headers.get("content-range");
     const total = (() => {
       if (!isNonEmptyString(contentRange)) {
         return null;

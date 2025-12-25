@@ -1,4 +1,5 @@
-// app/api/logs/route.ts
+// app/api/chatbot/logs/route.ts
+
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -31,18 +32,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function json(status: number, body: unknown) {
+  return NextResponse.json(body, { status });
+}
+
 function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
   if (isNonEmptyString(xff)) {
     const first = xff.split(",")[0]?.trim();
-    if (isNonEmptyString(first)) {
-      return first;
-    }
+    if (isNonEmptyString(first)) return first;
   }
+
   const xRealIp = request.headers.get("x-real-ip");
-  if (isNonEmptyString(xRealIp)) {
-    return xRealIp.trim();
-  }
+  if (isNonEmptyString(xRealIp)) return xRealIp.trim();
+
   return "unknown";
 }
 
@@ -90,42 +93,54 @@ function allowRequest(ip: string): { allowed: boolean; retryAfterSeconds?: numbe
 }
 
 function normalizeLevel(value: unknown): LogLevel {
-  if (value === "debug" || value === "info" || value === "warn" || value === "error") {
-    return value;
-  }
+  if (value === "debug" || value === "info" || value === "warn" || value === "error") return value;
   return "info";
 }
 
 function normalizeTimestamp(value: unknown): string {
   if (isNonEmptyString(value)) {
     const d = new Date(value);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toISOString();
-    }
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
   }
   return new Date().toISOString();
 }
 
 function sanitizeString(value: unknown, maxLen: number): string | undefined {
-  if (!isNonEmptyString(value)) {
-    return undefined;
-  }
+  if (!isNonEmptyString(value)) return undefined;
   return value.trim().slice(0, maxLen);
 }
 
 function sanitizeTags(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
+  if (!Array.isArray(value)) return undefined;
+
   const cleaned = value
     .filter((t) => isNonEmptyString(t))
     .map((t) => t.trim().slice(0, 48))
     .slice(0, 20);
 
-  if (cleaned.length === 0) {
-    return undefined;
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function safeJsonSizeCap(value: unknown, maxChars: number): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) return undefined;
+
+  try {
+    const jsonText = JSON.stringify(value);
+    if (jsonText.length <= maxChars) {
+      return value as Record<string, unknown>;
+    }
+
+    return {
+      _truncated: true,
+      _note: "data exceeded size cap",
+      _sizeChars: jsonText.length,
+    };
+  } catch {
+    return {
+      _truncated: true,
+      _note: "data was not JSON-serializable",
+    };
   }
-  return cleaned;
 }
 
 function validateBody(body: unknown): { ok: true; value: LogsRequestBody } | { ok: false; error: string } {
@@ -164,39 +179,31 @@ function validateBody(body: unknown): { ok: true; value: LogsRequestBody } | { o
       userId: sanitizeString((item as Record<string, unknown>).userId, 120),
       sessionId: sanitizeString((item as Record<string, unknown>).sessionId, 120),
       tags: sanitizeTags((item as Record<string, unknown>).tags),
-      data: isPlainObject((item as Record<string, unknown>).data)
-        ? ((item as Record<string, unknown>).data as Record<string, unknown>)
-        : undefined,
+      data: safeJsonSizeCap((item as Record<string, unknown>).data, 8_000),
     };
 
     normalizedLogs.push(normalized);
   }
 
   const metaRaw = (body as Record<string, unknown>).meta;
-  const normalizedMeta = isPlainObject(metaRaw) ? (metaRaw as Record<string, unknown>) : undefined;
+  const normalizedMeta = safeJsonSizeCap(metaRaw, 8_000);
 
   return { ok: true, value: { logs: normalizedLogs, meta: normalizedMeta } };
 }
 
 function isAuthorized(request: Request): boolean {
   const secret = process.env.LOG_INGEST_SECRET;
-  if (!isNonEmptyString(secret)) {
-    return true;
-  }
+  if (!isNonEmptyString(secret)) return true;
 
   const header = request.headers.get("x-log-secret");
-  if (!isNonEmptyString(header)) {
-    return false;
-  }
+  if (!isNonEmptyString(header)) return false;
 
   return header.trim() === secret.trim();
 }
 
 async function forwardToWebhook(payload: unknown): Promise<void> {
   const url = process.env.LOG_WEBHOOK_URL;
-  if (!isNonEmptyString(url)) {
-    return;
-  }
+  if (!isNonEmptyString(url)) return;
 
   try {
     const res = await fetch(url, {
@@ -208,7 +215,7 @@ async function forwardToWebhook(payload: unknown): Promise<void> {
     });
 
     if (!res.ok) {
-      const text = await res.text();
+      const text = await res.text().catch(() => "");
       console.error(
         JSON.stringify({
           type: "log_webhook_error",
@@ -229,8 +236,13 @@ async function forwardToWebhook(payload: unknown): Promise<void> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return json(415, { ok: false, error: "Unsupported content type. Use application/json." });
+  }
+
   if (!isAuthorized(request)) {
-    return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+    return json(401, { ok: false, error: "Unauthorized." });
   }
 
   const ip = getClientIp(request);
@@ -239,10 +251,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!rate.allowed) {
     const retryAfter = rate.retryAfterSeconds ?? 60;
     return new NextResponse(
-      JSON.stringify({
-        ok: false,
-        error: "Too many requests. Please slow down.",
-      }),
+      JSON.stringify({ ok: false, error: "Too many requests. Please slow down." }),
       {
         status: 429,
         headers: {
@@ -257,12 +266,12 @@ export async function POST(request: Request): Promise<Response> {
   try {
     jsonBody = await request.json();
   } catch {
-    return NextResponse.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
+    return json(400, { ok: false, error: "Invalid JSON body." });
   }
 
   const validated = validateBody(jsonBody);
   if (!validated.ok) {
-    return NextResponse.json({ ok: false, error: validated.error }, { status: 400 });
+    return json(400, { ok: false, error: validated.error });
   }
 
   const nowIso = new Date().toISOString();
@@ -278,33 +287,23 @@ export async function POST(request: Request): Promise<Response> {
   };
 
   // Primary sink: server logs (structured JSON).
-  // Your deployment can ship these to a log store (e.g., CloudWatch, Datadog, etc.).
   console.log(JSON.stringify(envelope));
 
-  // Optional secondary sink: webhook (e.g., your log collector).
+  // Optional secondary sink: webhook.
   await forwardToWebhook(envelope);
 
-  return NextResponse.json(
-    {
-      ok: true,
-      received: validated.value.logs.length,
-    },
-    { status: 200 },
-  );
+  return json(200, { ok: true, received: validated.value.logs.length });
 }
 
 export async function GET(): Promise<Response> {
   const secret = process.env.LOG_INGEST_SECRET;
   const requiresAuth = isNonEmptyString(secret);
 
-  return NextResponse.json(
-    {
-      ok: true,
-      service: "logs",
-      auth: requiresAuth ? "required" : "disabled",
-      webhook: isNonEmptyString(process.env.LOG_WEBHOOK_URL) ? "enabled" : "disabled",
-      timestamp: new Date().toISOString(),
-    },
-    { status: 200 },
-  );
+  return json(200, {
+    ok: true,
+    service: "chatbot-logs",
+    auth: requiresAuth ? "required" : "disabled",
+    webhook: isNonEmptyString(process.env.LOG_WEBHOOK_URL) ? "enabled" : "disabled",
+    timestamp: new Date().toISOString(),
+  });
 }

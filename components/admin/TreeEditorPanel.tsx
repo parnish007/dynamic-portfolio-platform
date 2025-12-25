@@ -1,80 +1,113 @@
 // components/admin/TreeEditorPanel.tsx
 
-import React, { useState, useEffect } from "react";
-import { SectionNode } from "../../types/section";
+"use client";
+
+import React, { useEffect, useMemo, useState } from "react";
+import type { SectionNode } from "../../types/section";
 
 type TreeEditorPanelProps = {
   selectedNode: SectionNode | null;
   onUpdateNode: (node: SectionNode) => void;
 };
 
-const TreeEditorPanel: React.FC<TreeEditorPanelProps> = ({
-  selectedNode,
-  onUpdateNode,
-}) => {
+function clampString(value: string, maxLen: number): string {
+  const v = value.trim();
+  if (!v) return "";
+  return v.slice(0, maxLen);
+}
+
+const TreeEditorPanel: React.FC<TreeEditorPanelProps> = ({ selectedNode, onUpdateNode }) => {
   const [title, setTitle] = useState("");
   const [type, setType] = useState<"section" | "project" | "blog">("section");
 
-  // Update local state when selectedNode changes
   useEffect(() => {
     if (selectedNode) {
-      setTitle(selectedNode.title);
+      setTitle(selectedNode.title ?? "");
       setType(selectedNode.type);
-    } else {
-      setTitle("");
-      setType("section");
+      return;
     }
+
+    setTitle("");
+    setType("section");
   }, [selectedNode]);
+
+  const normalizedTitle = useMemo(() => clampString(title, 120), [title]);
+
+  const canSave = useMemo(() => {
+    if (!selectedNode) return false;
+
+    const nextTitle = normalizedTitle.length > 0 ? normalizedTitle : selectedNode.title;
+    const isSameTitle = (nextTitle ?? "") === (selectedNode.title ?? "");
+    const isSameType = type === selectedNode.type;
+
+    return !(isSameTitle && isSameType);
+  }, [normalizedTitle, selectedNode, type]);
 
   if (!selectedNode) {
     return (
-      <div className="p-4 border-l border-gray-200 h-full flex items-center justify-center text-gray-400">
+      <div className="flex h-full items-center justify-center border-l border-zinc-800 p-4 text-sm text-zinc-400">
         Select a node to edit
       </div>
     );
   }
 
   const handleSave = () => {
+    const nextTitle = normalizedTitle.length > 0 ? normalizedTitle : selectedNode.title;
+
     const updatedNode: SectionNode = {
       ...selectedNode,
-      title: title.trim() || selectedNode.title,
+      title: nextTitle ?? selectedNode.title,
       type,
     };
+
     onUpdateNode(updatedNode);
   };
 
   return (
-    <div className="p-4 border-l border-gray-200 h-full flex flex-col space-y-4">
-      <h2 className="text-lg font-semibold">Edit Node</h2>
-
-      <div className="flex flex-col">
-        <label className="mb-1 font-medium text-gray-700">Title</label>
-        <input
-          type="text"
-          className="border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-        />
+    <div className="flex h-full flex-col gap-4 border-l border-zinc-800 p-4">
+      <div>
+        <h2 className="text-base font-semibold text-zinc-100">Edit Node</h2>
+        <p className="mt-1 text-xs text-zinc-400">
+          Update title and type. (Later we’ll add slug, publish toggle, order, and meta.)
+        </p>
       </div>
 
-      <div className="flex flex-col">
-        <label className="mb-1 font-medium text-gray-700">Type</label>
+      <div className="flex flex-col gap-2">
+        <label className="text-xs font-medium text-zinc-300">Title</label>
+        <input
+          type="text"
+          className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="e.g. About Me"
+          maxLength={140}
+        />
+        <div className="text-[11px] text-zinc-500">
+          {normalizedTitle.length}/{120} (auto-trimmed)
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <label className="text-xs font-medium text-zinc-300">Type</label>
         <select
-          className="border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
           value={type}
-          onChange={(e) =>
-            setType(e.target.value as "section" | "project" | "blog")
-          }
+          onChange={(e) => setType(e.target.value as "section" | "project" | "blog")}
         >
           <option value="section">Section</option>
           <option value="project">Project</option>
           <option value="blog">Blog</option>
         </select>
+
+        <div className="text-[11px] text-zinc-500">
+          Note: Folder support will be added (folder / section / project / blog).
+        </div>
       </div>
 
       <button
         onClick={handleSave}
-        className="mt-auto bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded transition"
+        disabled={!canSave}
+        className="mt-auto inline-flex items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-zinc-900/60 disabled:cursor-not-allowed disabled:opacity-50"
       >
         Save Changes
       </button>

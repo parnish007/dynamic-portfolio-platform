@@ -24,13 +24,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function clampInt(value: string | null, fallback: number, min: number, max: number): number {
-  if (!isNonEmptyString(value)) {
-    return fallback;
-  }
+  if (!isNonEmptyString(value)) return fallback;
   const n = Number.parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    return fallback;
-  }
+  if (Number.isNaN(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }
 
@@ -46,22 +42,17 @@ function getClientIp(request: Request): string {
 }
 
 /**
- * Admin protection:
- * - If MEDIA_UPLOAD_SECRET is set, require:
- *   x-media-upload-secret: <secret>
- *
- * (Later you can replace this with your admin session auth.)
+ * Admin protection (MUST be set in prod):
+ * - Require MEDIA_UPLOAD_SECRET
+ * - Header: x-media-upload-secret: <secret>
  */
 function isMediaAdminAuthorized(request: Request): boolean {
   const secret = process.env.MEDIA_UPLOAD_SECRET;
   if (!isNonEmptyString(secret)) {
-    // Dev-friendly: allow if not set
-    return true;
-  }
-  const header = request.headers.get("x-media-upload-secret");
-  if (!isNonEmptyString(header)) {
     return false;
   }
+  const header = request.headers.get("x-media-upload-secret");
+  if (!isNonEmptyString(header)) return false;
   return header.trim() === secret.trim();
 }
 
@@ -115,28 +106,24 @@ function allowRequest(args: {
   return { allowed: true };
 }
 
-function getSupabaseConfig(): { url: string; key: string; bucket: string } | null {
+function getSupabaseConfig(): { url: string; serviceKey: string; bucket: string } | null {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
   const bucket = isNonEmptyString(process.env.SUPABASE_MEDIA_BUCKET)
     ? String(process.env.SUPABASE_MEDIA_BUCKET).trim()
     : "media";
 
-  if (!isNonEmptyString(url) || !isNonEmptyString(key)) {
+  if (!isNonEmptyString(url) || !isNonEmptyString(serviceKey)) {
     return null;
   }
 
-  return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), bucket };
+  return { url: String(url).trim().replace(/\/$/, ""), serviceKey: String(serviceKey).trim(), bucket };
 }
 
 function getPublicBaseUrl(): string | null {
@@ -146,16 +133,41 @@ function getPublicBaseUrl(): string | null {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  if (!isNonEmptyString(url)) {
-    return null;
-  }
+  if (!isNonEmptyString(url)) return null;
   return String(url).trim().replace(/\/$/, "");
 }
 
+function shouldReturnPublicUrl(): boolean {
+  const env = process.env.MEDIA_UPLOAD_RETURN_PUBLIC_URL;
+  if (!isNonEmptyString(env)) return false;
+  const v = env.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+function sanitizePrefix(input: string): string {
+  const raw = input.trim().replaceAll("\\", "/");
+
+  const parts = raw
+    .split("/")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .filter((p) => p !== "." && p !== "..")
+    .map((p) => p.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40))
+    .filter((p) => p.length > 0);
+
+  return parts.join("/").slice(0, 160);
+}
+
+function sanitizePath(input: string): string | null {
+  const p = sanitizePrefix(input);
+  if (!isNonEmptyString(p)) return null;
+  if (p.length < 3) return null;
+  return p;
+}
+
 function buildPublicUrl(args: { base: string | null; bucket: string; path: string }): string | null {
-  if (!args.base) {
-    return null;
-  }
+  if (!args.base) return null;
+
   const safePath = args.path
     .split("/")
     .filter((x) => x.length > 0)
@@ -167,9 +179,7 @@ function buildPublicUrl(args: { base: string | null; bucket: string; path: strin
 
 function normalizeListItem(raw: Record<string, unknown>): MediaListItem | null {
   const name = raw.name;
-  if (!isNonEmptyString(name)) {
-    return null;
-  }
+  if (!isNonEmptyString(name)) return null;
 
   const metadata = isPlainObject(raw.metadata) ? (raw.metadata as Record<string, unknown>) : null;
 
@@ -205,10 +215,6 @@ function err(error: string, status: number, details?: string): Response {
  * - prefix: folder path inside bucket (e.g. "uploads/2025/12")
  * - limit: number of items to return (default 50, max 200)
  * - offset: for pagination (default 0)
- *
- * Notes:
- * - Supabase list API supports "prefix" and "limit" and "offset" via body.
- * - We return `url` only as best-effort public URL (bucket must be public for it to work).
  */
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -227,13 +233,13 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   if (!isMediaAdminAuthorized(request)) {
-    return err("Unauthorized.", 401);
+    return err("Unauthorized. Set MEDIA_UPLOAD_SECRET and pass x-media-upload-secret.", 401);
   }
 
   const cfg = getSupabaseConfig();
   if (!cfg) {
     return err(
-      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (recommended).",
+      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
       500,
     );
   }
@@ -241,16 +247,13 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
 
   const prefixRaw = url.searchParams.get("prefix");
-  const prefix = isNonEmptyString(prefixRaw)
-    ? prefixRaw.trim().replace(/^\/+/, "").replace(/\/+$/, "")
-    : "";
+  const prefix = isNonEmptyString(prefixRaw) ? sanitizePrefix(prefixRaw) : "";
 
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 200);
   const offset = clampInt(url.searchParams.get("offset"), 0, 0, 100_000);
 
   const listUrl = `${cfg.url}/storage/v1/object/list/${encodeURIComponent(cfg.bucket)}`;
 
-  // Supabase list API uses POST with JSON body.
   const body: Record<string, unknown> = {
     prefix: prefix.length > 0 ? `${prefix}/` : "",
     limit,
@@ -262,8 +265,8 @@ export async function GET(request: Request): Promise<Response> {
     const res = await fetch(listUrl, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${cfg.key}`,
-        apikey: cfg.key,
+        Authorization: `Bearer ${cfg.serviceKey}`,
+        apikey: cfg.serviceKey,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -283,6 +286,7 @@ export async function GET(request: Request): Promise<Response> {
     }
 
     const base = getPublicBaseUrl();
+    const includePublicUrl = shouldReturnPublicUrl();
 
     const items = (json as Array<Record<string, unknown>>)
       .map((x) => (isPlainObject(x) ? (x as Record<string, unknown>) : null))
@@ -291,7 +295,7 @@ export async function GET(request: Request): Promise<Response> {
       .filter((x): x is MediaListItem => x !== null)
       .map((x) => {
         const fullPath = prefix.length > 0 ? `${prefix}/${x.name}` : x.name;
-        const url = buildPublicUrl({ base, bucket: cfg.bucket, path: fullPath });
+        const url = includePublicUrl ? buildPublicUrl({ base, bucket: cfg.bucket, path: fullPath }) : null;
         return { ...x, path: fullPath, url };
       });
 
@@ -314,9 +318,6 @@ export async function GET(request: Request): Promise<Response> {
  * DELETE /api/media
  * Body JSON:
  * - path: full object path inside bucket (e.g. "uploads/2025/12/25/file.png")
- *
- * Notes:
- * - Uses Supabase remove API: POST /storage/v1/object/remove/<bucket> { prefixes: [path] }
  */
 export async function DELETE(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -335,13 +336,13 @@ export async function DELETE(request: Request): Promise<Response> {
   }
 
   if (!isMediaAdminAuthorized(request)) {
-    return err("Unauthorized.", 401);
+    return err("Unauthorized. Set MEDIA_UPLOAD_SECRET and pass x-media-upload-secret.", 401);
   }
 
   const cfg = getSupabaseConfig();
   if (!cfg) {
     return err(
-      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (recommended).",
+      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
       500,
     );
   }
@@ -358,14 +359,12 @@ export async function DELETE(request: Request): Promise<Response> {
   }
 
   const pathRaw = (bodyJson as Record<string, unknown>).path;
-
   if (!isNonEmptyString(pathRaw)) {
     return err("Field 'path' is required.", 400);
   }
 
-  const path = pathRaw.trim().replace(/^\/+/, "");
-
-  if (path.length < 3) {
+  const path = sanitizePath(pathRaw);
+  if (!path) {
     return err("Invalid path.", 400);
   }
 
@@ -375,8 +374,8 @@ export async function DELETE(request: Request): Promise<Response> {
     const res = await fetch(removeUrl, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${cfg.key}`,
-        apikey: cfg.key,
+        Authorization: `Bearer ${cfg.serviceKey}`,
+        apikey: cfg.serviceKey,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -389,7 +388,6 @@ export async function DELETE(request: Request): Promise<Response> {
       return err("Failed to delete media.", 502, text);
     }
 
-    // Supabase may return an array of deleted keys or empty body depending on version.
     let deleted: unknown = null;
     try {
       deleted = await res.json();

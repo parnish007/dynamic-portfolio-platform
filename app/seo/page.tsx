@@ -1,5 +1,7 @@
 // app/seo/page.tsx
 import type { Metadata } from "next";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 
 type ApiErr = { ok: false; error: string; details?: string };
 
@@ -37,10 +39,12 @@ function safeString(value: unknown): string | null {
 
 function readSiteUrlFromSettings(settings: Record<string, unknown> | null): string | null {
   if (!settings) return null;
-  const site = settings.site;
+  const site = (settings as Record<string, unknown>).site;
   if (!isPlainObject(site)) return null;
-  const url = site.url;
+
+  const url = (site as Record<string, unknown>).url;
   if (!isNonEmptyString(url)) return null;
+
   try {
     const u = new URL(url.trim());
     return u.toString().replace(/\/+$/, "");
@@ -87,9 +91,24 @@ async function safeJson<T>(res: Response): Promise<T | ApiErr> {
   }
 }
 
-async function getSettings(): Promise<SettingsOk | ApiErr> {
+function getRequestOrigin(): string {
+  const h = headers();
+
+  const proto =
+    h.get("x-forwarded-proto") ??
+    (process.env.NODE_ENV === "production" ? "https" : "http");
+
+  const host =
+    h.get("x-forwarded-host") ??
+    h.get("host") ??
+    "localhost:3000";
+
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+async function getSettings(origin: string): Promise<SettingsOk | ApiErr> {
   try {
-    const res = await fetch("/api/settings", {
+    const res = await fetch(`${origin}/api/settings`, {
       method: "GET",
       cache: "no-store",
     });
@@ -100,8 +119,9 @@ async function getSettings(): Promise<SettingsOk | ApiErr> {
   }
 }
 
-async function getSitemap(format: "json" | "xml"): Promise<SitemapOk | string | ApiErr> {
-  const url = `/api/seo/sitemap?format=${format}`;
+async function getSitemap(origin: string, format: "json" | "xml"): Promise<SitemapOk | string | ApiErr> {
+  const url = `${origin}/api/seo/sitemap?format=${format}`;
+
   try {
     const res = await fetch(url, { method: "GET", cache: "no-store" });
 
@@ -125,8 +145,27 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default async function SeoPage() {
-  const [settingsRes, sitemapResJson] = await Promise.all([getSettings(), getSitemap("json")]);
+export default async function SeoPage(props: { searchParams?: Record<string, string | string[] | undefined> }) {
+  // Optional protection (recommended)
+  // Set SEO_DASHBOARD_SECRET="something" in env
+  // Visit /seo?secret=something
+  const secret = process.env.SEO_DASHBOARD_SECRET;
+  if (isNonEmptyString(secret)) {
+    const sp = props.searchParams ?? {};
+    const providedRaw = sp.secret;
+    const provided = Array.isArray(providedRaw) ? providedRaw[0] : providedRaw;
+
+    if (!isNonEmptyString(provided) || provided.trim() !== secret.trim()) {
+      redirect("/");
+    }
+  }
+
+  const origin = getRequestOrigin();
+
+  const [settingsRes, sitemapResJson] = await Promise.all([
+    getSettings(origin),
+    getSitemap(origin, "json"),
+  ]);
 
   const settings =
     isPlainObject(settingsRes) && (settingsRes as SettingsOk).ok === true
@@ -140,12 +179,13 @@ export default async function SeoPage() {
       ? (sitemapResJson as SitemapOk)
       : null;
 
-  const siteUrl = readSiteUrlFromSettings(settings?.settings ?? null) ?? getEnvSiteUrl();
+  const siteUrl = readSiteUrlFromSettings(settings?.settings ?? null) ?? getEnvSiteUrl() ?? origin;
 
-  const robotsTxtUrl = siteUrl ? `${siteUrl}/robots.txt` : "/robots.txt";
-  const sitemapXmlUrl = siteUrl ? `${siteUrl}/sitemap.xml` : "/sitemap.xml";
-  const sitemapApiXmlUrl = siteUrl ? `${siteUrl}/api/seo/sitemap?format=xml` : "/api/seo/sitemap?format=xml";
-  const sitemapApiJsonUrl = siteUrl ? `${siteUrl}/api/seo/sitemap?format=json` : "/api/seo/sitemap?format=json";
+  const robotsTxtUrl = `${siteUrl}/robots.txt`;
+
+  // Prefer API sitemap unless you actually implement /sitemap.xml route.
+  const sitemapApiXmlUrl = `${siteUrl}/api/seo/sitemap?format=xml`;
+  const sitemapApiJsonUrl = `${siteUrl}/api/seo/sitemap?format=json`;
 
   return (
     <main style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 16px" }}>
@@ -198,11 +238,6 @@ export default async function SeoPage() {
           <div style={{ opacity: 0.8 }}>robots.txt</div>
           <div style={{ wordBreak: "break-word" }}>
             <a href={robotsTxtUrl}>{robotsTxtUrl}</a>
-          </div>
-
-          <div style={{ opacity: 0.8 }}>sitemap.xml</div>
-          <div style={{ wordBreak: "break-word" }}>
-            <a href={sitemapXmlUrl}>{sitemapXmlUrl}</a>
           </div>
 
           <div style={{ opacity: 0.8 }}>Sitemap API (XML)</div>
@@ -301,7 +336,12 @@ export default async function SeoPage() {
       </section>
 
       <footer style={{ opacity: 0.75, fontSize: 13 }}>
-        <div>Tip: Ensure <code>NEXT_PUBLIC_SITE_URL</code> is set in production for correct absolute URLs.</div>
+        <div>
+          Tip: Ensure <code>NEXT_PUBLIC_SITE_URL</code> is set in production for correct absolute URLs.
+        </div>
+        <div style={{ marginTop: 6 }}>
+          Tip: If you want a standard sitemap URL, create <code>app/sitemap.xml/route.ts</code> that proxies the API.
+        </div>
       </footer>
     </main>
   );

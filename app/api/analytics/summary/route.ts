@@ -1,15 +1,8 @@
+// app/api/analytics/summary/route.ts
+
 import { NextResponse } from "next/server";
 
 type SummaryPeriod = "24h" | "7d" | "30d" | "90d";
-
-type SummaryQuery = {
-  period?: SummaryPeriod;
-  /**
-   * Optional filter for a specific path prefix,
-   * e.g. "/project" to summarize only project traffic.
-   */
-  pathPrefix?: string;
-};
 
 type TimeseriesPoint = {
   /**
@@ -59,10 +52,7 @@ type AnalyticsSummaryResponse = {
 };
 
 function jsonError(status: number, message: string) {
-  return NextResponse.json(
-    { message },
-    { status }
-  );
+  return NextResponse.json({ message }, { status });
 }
 
 function safeTrim(v: unknown, maxLen: number): string {
@@ -72,9 +62,7 @@ function safeTrim(v: unknown, maxLen: number): string {
 }
 
 function normalizePeriod(v: unknown): SummaryPeriod {
-  if (v === "24h" || v === "7d" || v === "30d" || v === "90d") {
-    return v;
-  }
+  if (v === "24h" || v === "7d" || v === "30d" || v === "90d") return v;
   return "7d";
 }
 
@@ -82,6 +70,15 @@ function isValidPathPrefix(prefix: string) {
   if (!prefix.startsWith("/")) return false;
   if (prefix.startsWith("//")) return false;
   if (prefix.includes("\n") || prefix.includes("\r")) return false;
+
+  /**
+   * Keep it simple + safe.
+   * Avoid prefixes that look like protocols or contain spaces.
+   */
+  if (prefix.includes(" ")) return false;
+  if (prefix.toLowerCase().includes("http:")) return false;
+  if (prefix.toLowerCase().includes("https:")) return false;
+
   return true;
 }
 
@@ -102,6 +99,50 @@ function periodToMs(period: SummaryPeriod) {
   }
 }
 
+function toUtcHourBucket(ts: number) {
+  const d = new Date(ts);
+  d.setUTCMinutes(0, 0, 0);
+  return d.toISOString();
+}
+
+function toUtcDayBucket(ts: number) {
+  const d = new Date(ts);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function buildEmptySeries(args: { period: SummaryPeriod; fromTs: number; toTs: number }): TimeseriesPoint[] {
+  const { period, fromTs, toTs } = args;
+
+  const points: TimeseriesPoint[] = [];
+
+  if (period === "24h") {
+    const start = new Date(fromTs);
+    start.setUTCMinutes(0, 0, 0);
+
+    const end = new Date(toTs);
+    end.setUTCMinutes(0, 0, 0);
+
+    for (let t = start.getTime(); t <= end.getTime(); t += 60 * 60 * 1000) {
+      points.push({ bucket: toUtcHourBucket(t), count: 0 });
+    }
+
+    return points;
+  }
+
+  const start = new Date(fromTs);
+  start.setUTCHours(0, 0, 0, 0);
+
+  const end = new Date(toTs);
+  end.setUTCHours(0, 0, 0, 0);
+
+  for (let t = start.getTime(); t <= end.getTime(); t += 24 * 60 * 60 * 1000) {
+    points.push({ bucket: toUtcDayBucket(t), count: 0 });
+  }
+
+  return points;
+}
+
 /**
  * Placeholder aggregation layer.
  * Replace later with Supabase SQL aggregations / views.
@@ -115,6 +156,35 @@ async function fetchSummaryFromStore(_args: {
   return null;
 }
 
+function normalizeStoredSummary(
+  stored: AnalyticsSummaryResponse,
+  fallbackArgs: { period: SummaryPeriod; fromTs: number; toTs: number }
+): AnalyticsSummaryResponse {
+  const warnings = Array.isArray(stored.warnings) ? stored.warnings : [];
+
+  const pageViews = Array.isArray(stored.charts?.pageViews) ? stored.charts.pageViews : [];
+  const chatbotMessages = Array.isArray(stored.charts?.chatbotMessages) ? stored.charts.chatbotMessages : [];
+  const livechatMessages = Array.isArray(stored.charts?.livechatMessages) ? stored.charts.livechatMessages : [];
+
+  return {
+    ...stored,
+    period: stored.period ?? fallbackArgs.period,
+    fromTs: stored.fromTs ?? fallbackArgs.fromTs,
+    toTs: stored.toTs ?? fallbackArgs.toTs,
+    charts: {
+      pageViews,
+      chatbotMessages,
+      livechatMessages,
+    },
+    top: {
+      pages: Array.isArray(stored.top?.pages) ? stored.top.pages : [],
+      projects: Array.isArray(stored.top?.projects) ? stored.top.projects : [],
+      blogs: Array.isArray(stored.top?.blogs) ? stored.top.blogs : [],
+    },
+    warnings,
+  };
+}
+
 function buildEmptySummary(args: {
   period: SummaryPeriod;
   fromTs: number;
@@ -122,9 +192,9 @@ function buildEmptySummary(args: {
 }): AnalyticsSummaryResponse {
   const { period, fromTs, toTs } = args;
 
-  const warnings: string[] = [
-    "Analytics storage is not wired yet. Returning placeholder empty summary.",
-  ];
+  const warnings: string[] = ["Analytics storage is not wired yet. Returning placeholder empty summary."];
+
+  const emptySeries = buildEmptySeries({ period, fromTs, toTs });
 
   return {
     ok: true,
@@ -144,9 +214,9 @@ function buildEmptySummary(args: {
       outboundClicks: 0,
     },
     charts: {
-      pageViews: [],
-      chatbotMessages: [],
-      livechatMessages: [],
+      pageViews: emptySeries,
+      chatbotMessages: emptySeries.map((p) => ({ ...p })),
+      livechatMessages: emptySeries.map((p) => ({ ...p })),
     },
     top: {
       pages: [],
@@ -165,20 +235,18 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
 
   const period = normalizePeriod(url.searchParams.get("period") || undefined);
-  const pathPrefixRaw = url.searchParams.get("pathPrefix") || undefined;
-  const pathPrefix = pathPrefixRaw ? safeTrim(pathPrefixRaw, 256) : "";
+
+  const pathPrefixRaw = url.searchParams.get("pathPrefix") || "";
+  const pathPrefix = safeTrim(pathPrefixRaw, 256);
 
   if (pathPrefix && !isValidPathPrefix(pathPrefix)) {
-    return jsonError(
-      400,
-      "Invalid pathPrefix. Must be site-relative like /project"
-    );
+    return jsonError(400, "Invalid pathPrefix. Must be site-relative like /project");
   }
 
   const toTs = nowMs();
   const fromTs = toTs - periodToMs(period);
 
-  const warnings: string[] = [];
+  const extraWarnings: string[] = [];
 
   try {
     const stored = await fetchSummaryFromStore({
@@ -189,33 +257,21 @@ export async function GET(req: Request) {
     });
 
     if (stored) {
-      /**
-       * Ensure response shape stays consistent for charts.
-       */
-      stored.warnings = Array.isArray(stored.warnings)
-        ? stored.warnings
-        : [];
-      stored.warnings.push(...warnings);
-
-      return NextResponse.json(stored, { status: 200 });
+      const normalized = normalizeStoredSummary(stored, { period, fromTs, toTs });
+      normalized.warnings.push(...extraWarnings);
+      return NextResponse.json(normalized, { status: 200 });
     }
 
     const empty = buildEmptySummary({ period, fromTs, toTs });
-    empty.warnings.push(...warnings);
+    empty.warnings.push(...extraWarnings);
 
     return NextResponse.json(empty, { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to build analytics summary";
-    return jsonError(
-      500,
-      message
-    );
+    return jsonError(500, message);
   }
 }
 
 export async function POST() {
-  return jsonError(
-    405,
-    "Method not allowed. Use GET."
-  );
+  return jsonError(405, "Method not allowed. Use GET.");
 }

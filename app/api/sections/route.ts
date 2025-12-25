@@ -12,14 +12,10 @@ type SectionRecord = {
   type: string | null;
   path: string | null;
 
-  // Publishing + nav
   isPublished: boolean;
   order: number;
 
-  // Content payload (fully dynamic, admin-controlled)
   data: Record<string, unknown> | null;
-
-  // SEO payload (admin-controlled)
   seo: Record<string, unknown> | null;
 
   createdAt: string | null;
@@ -37,12 +33,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value !== 0;
-  }
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
   if (typeof value === "string") {
     const v = value.trim().toLowerCase();
     if (v === "true" || v === "1" || v === "yes") return true;
@@ -52,14 +44,19 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 function normalizeNumber(value: unknown, fallback: number): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const n = Number.parseFloat(value);
     if (Number.isFinite(n)) return n;
   }
   return fallback;
+}
+
+function clampInt(value: string | null, fallback: number, min: number, max: number): number {
+  if (!isNonEmptyString(value)) return fallback;
+  const n = Number.parseInt(value, 10);
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 function getClientIp(request: Request): string {
@@ -121,15 +118,34 @@ function allowRequest(args: {
   return { allowed: true };
 }
 
-function getSupabaseConfig(): { url: string; key: string; table: string } | null {
+/**
+ * Admin protection for reading unpublished sections.
+ * - If SECTIONS_ADMIN_SECRET is set, require:
+ *   x-sections-admin-secret: <secret>
+ *
+ * Temporary until your real admin auth is wired.
+ */
+function isSectionsAdminAuthorized(request: Request): boolean {
+  const secret = process.env.SECTIONS_ADMIN_SECRET;
+  if (!isNonEmptyString(secret)) {
+    return false;
+  }
+  const header = request.headers.get("x-sections-admin-secret");
+  if (!isNonEmptyString(header)) return false;
+  return header.trim() === secret.trim();
+}
+
+/**
+ * Public route must use ANON key only.
+ */
+function getSupabaseConfig(): { url: string; anonKey: string; table: string } | null {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  const anonKey =
     process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
     "";
@@ -138,11 +154,11 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
     ? String(process.env.SUPABASE_SECTIONS_TABLE).trim()
     : "sections";
 
-  if (!isNonEmptyString(url) || !isNonEmptyString(key)) {
+  if (!isNonEmptyString(url) || !isNonEmptyString(anonKey)) {
     return null;
   }
 
-  return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), table };
+  return { url: String(url).trim().replace(/\/$/, ""), anonKey: String(anonKey).trim(), table };
 }
 
 function buildPostgrestUrl(args: {
@@ -155,8 +171,9 @@ function buildPostgrestUrl(args: {
   const url = new URL(`${args.baseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
   url.searchParams.set("select", args.select);
 
+  // Use append so repeated keys don't overwrite.
   for (const f of args.filters) {
-    url.searchParams.set(f.key, f.value);
+    url.searchParams.append(f.key, f.value);
   }
 
   if (isNonEmptyString(args.order)) {
@@ -170,15 +187,18 @@ function normalizeSection(row: Record<string, unknown>): SectionRecord | null {
   const idRaw = row.id ?? row.section_id ?? row.uuid;
   const slugRaw = row.slug;
 
-  if (!isNonEmptyString(idRaw) || !isNonEmptyString(slugRaw)) {
-    return null;
-  }
+  if (!isNonEmptyString(idRaw) || !isNonEmptyString(slugRaw)) return null;
 
   const title = typeof row.title === "string" ? row.title : typeof row.name === "string" ? row.name : null;
 
   const type = typeof row.type === "string" ? row.type : null;
 
-  const path = typeof row.path === "string" ? row.path : typeof row.full_path === "string" ? row.full_path : null;
+  const path =
+    typeof row.path === "string"
+      ? row.path
+      : typeof row.full_path === "string"
+        ? row.full_path
+        : null;
 
   const isPublished = normalizeBoolean(row.is_published ?? row.isPublished ?? row.published, true);
 
@@ -219,9 +239,7 @@ function normalizeSection(row: Record<string, unknown>): SectionRecord | null {
 
 function err(error: string, status: number, details?: string): Response {
   const payload: ApiErr = { ok: false, error };
-  if (isNonEmptyString(details)) {
-    payload.details = details.slice(0, 2000);
-  }
+  if (isNonEmptyString(details)) payload.details = details.slice(0, 2000);
   return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
 }
 
@@ -230,12 +248,12 @@ function err(error: string, status: number, details?: string): Response {
  *
  * Query params:
  * - slug=<string>              (optional) return single section
- * - path=<string>              (optional) return by full path
- * - includeUnpublished=true    (optional) admin usage; default false
+ * - path=<string>              (optional) return by path/full_path
+ * - includeUnpublished=true    (optional) admin usage; default false (requires secret)
  * - limit, offset              (optional) pagination for list mode
  *
  * Public behavior:
- * - Filters out unpublished unless includeUnpublished=true AND your DB/RLS permits it.
+ * - Always filters unpublished unless includeUnpublished=true AND admin secret is valid.
  */
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -255,14 +273,22 @@ export async function GET(request: Request): Promise<Response> {
 
   const cfg = getSupabaseConfig();
   if (!cfg) {
-    return err("Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).", 500);
+    return err("Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.", 500);
   }
 
   const url = new URL(request.url);
 
   const slug = url.searchParams.get("slug");
   const path = url.searchParams.get("path");
-  const includeUnpublished = url.searchParams.get("includeUnpublished") === "true";
+  const includeUnpublishedRequested = url.searchParams.get("includeUnpublished") === "true";
+
+  // Protect unpublished reads
+  const includeUnpublished =
+    includeUnpublishedRequested ? isSectionsAdminAuthorized(request) : false;
+
+  if (includeUnpublishedRequested && !includeUnpublished) {
+    return err("Unauthorized.", 401, "Missing/invalid x-sections-admin-secret.");
+  }
 
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 200);
   const offset = clampInt(url.searchParams.get("offset"), 0, 0, 100_000);
@@ -273,13 +299,17 @@ export async function GET(request: Request): Promise<Response> {
     filters.push({ key: "slug", value: `eq.${slug.trim()}` });
   }
 
-  if (isNonEmptyString(path)) {
-    // Some schemas might store "path" or "full_path".
-    // We try "path" first; if your column name differs, set SUPABASE_SECTIONS_PATH_COLUMN.
-    const pathCol = isNonEmptyString(process.env.SUPABASE_SECTIONS_PATH_COLUMN)
-      ? String(process.env.SUPABASE_SECTIONS_PATH_COLUMN).trim()
-      : "path";
-    filters.push({ key: pathCol, value: `eq.${path.trim()}` });
+  // Path match:
+  // We try a DB column (configurable) if provided; otherwise we fetch by slug/list
+  // and do path filtering in-memory as fallback (safer for schema variance).
+  const pathCol = isNonEmptyString(process.env.SUPABASE_SECTIONS_PATH_COLUMN)
+    ? String(process.env.SUPABASE_SECTIONS_PATH_COLUMN).trim()
+    : "path";
+
+  const shouldFilterPathInDb = isNonEmptyString(path) && isNonEmptyString(pathCol);
+
+  if (shouldFilterPathInDb) {
+    filters.push({ key: pathCol, value: `eq.${path!.trim()}` });
   }
 
   if (!includeUnpublished) {
@@ -303,8 +333,8 @@ export async function GET(request: Request): Promise<Response> {
     const res = await fetch(postgrestUrl.toString(), {
       method: "GET",
       headers: {
-        apikey: cfg.key,
-        Authorization: `Bearer ${cfg.key}`,
+        apikey: cfg.anonKey,
+        Authorization: `Bearer ${cfg.anonKey}`,
         Accept: "application/json",
         Range: `${rangeFrom}-${rangeTo}`,
         Prefer: "count=exact",
@@ -330,16 +360,28 @@ export async function GET(request: Request): Promise<Response> {
       return Number.isNaN(n) ? null : n;
     })();
 
-    const sections = rows
+    let sections = rows
       .map((r) => normalizeSection(r))
       .filter((s): s is SectionRecord => s !== null);
 
+    // In-memory path fallback:
+    // If path was provided but DB column mismatch happened (or you store full_path),
+    // we still try to filter using normalized `section.path`.
+    if (isNonEmptyString(path)) {
+      const wanted = path.trim();
+      sections = sections.filter((s) => isNonEmptyString(s.path) && s.path === wanted);
+    }
+
+    // Single mode
     if (isNonEmptyString(slug) || isNonEmptyString(path)) {
       const first = sections[0] ?? null;
       if (!first) {
         return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
       }
-      return NextResponse.json({ ok: true, section: first }, { status: 200, headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json(
+        { ok: true, section: first },
+        { status: 200, headers: { "Cache-Control": "no-store" } },
+      );
     }
 
     return NextResponse.json(

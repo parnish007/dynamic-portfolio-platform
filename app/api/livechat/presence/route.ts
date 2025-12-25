@@ -13,11 +13,7 @@ type PresenceRecord = {
   status: PresenceStatus;
   lastSeenAt: string;
   message?: string | null;
-
-  // Extra metadata (schema-flexible).
   meta: Record<string, unknown> | null;
-
-  // Full raw row for flexibility.
   raw: Record<string, unknown>;
 };
 
@@ -71,6 +67,10 @@ function getClientIp(request: Request): string {
  * Best-effort in-memory rate limiter.
  * - GET: 240 req/min/IP
  * - POST: 120 req/min/IP
+ *
+ * NOTE:
+ * Not reliable in serverless/multi-instance environments.
+ * Treat as best-effort only.
  */
 type RateEntry = { tokens: number; lastRefillMs: number };
 const RL_KEY_GET = "__portfolio_livechat_presence_rl_get__";
@@ -118,10 +118,9 @@ function allowRequest(args: {
 }
 
 /**
- * Optional protection:
- * - If LIVECHAT_AGENT_SECRET is set, then changing agent presence requires:
- *   x-livechat-agent-secret: <secret>
- * - Visitors can update their own presence by sessionId without secret.
+ * Agent protection:
+ * If LIVECHAT_AGENT_SECRET is set, changing agent presence requires header:
+ * x-livechat-agent-secret: <secret>
  */
 function isAgentAuthorized(request: Request): boolean {
   const secret = process.env.LIVECHAT_AGENT_SECRET;
@@ -135,6 +134,23 @@ function isAgentAuthorized(request: Request): boolean {
   return header.trim() === secret.trim();
 }
 
+/**
+ * Visitor session token protection.
+ * Public clients MUST send:
+ * x-livechat-visitor-token: <random token>
+ */
+function getVisitorToken(request: Request): string | null {
+  const token = request.headers.get("x-livechat-visitor-token");
+  if (!isNonEmptyString(token)) {
+    return null;
+  }
+  const t = token.trim();
+  if (t.length < 12 || t.length > 200) {
+    return null;
+  }
+  return t;
+}
+
 function getSupabaseConfig(): { url: string; key: string; table: string } | null {
   const url =
     process.env.SUPABASE_URL ??
@@ -142,8 +158,8 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
+  // ✅ SECURITY: public route must never use SERVICE_ROLE
   const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
     process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
     "";
@@ -161,7 +177,6 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
 
 function normalizePresenceRow(row: Record<string, unknown>): PresenceRecord | null {
   const idRaw = row.id ?? row.presence_id ?? row.uuid;
-
   if (!isNonEmptyString(idRaw)) {
     return null;
   }
@@ -216,6 +231,42 @@ function buildPostgrestUrl(args: {
   return url;
 }
 
+/**
+ * Best-effort authorization:
+ * Ensure visitor token matches meta->>sessionToken for this visitor presence row.
+ */
+async function verifyVisitorPresenceToken(args: {
+  cfg: { url: string; key: string; table: string };
+  sessionId: string;
+  visitorToken: string;
+}): Promise<boolean> {
+  const { cfg, sessionId, visitorToken } = args;
+
+  const verifyUrl = new URL(`${cfg.url}/rest/v1/${encodeURIComponent(cfg.table)}`);
+  verifyUrl.searchParams.set("select", "id");
+  verifyUrl.searchParams.set("scope", "eq.visitor");
+  verifyUrl.searchParams.set("session_id", `eq.${sessionId}`);
+  verifyUrl.searchParams.set("meta->>sessionToken", `eq.${visitorToken}`);
+  verifyUrl.searchParams.set("limit", "1");
+
+  const res = await fetch(verifyUrl.toString(), {
+    method: "GET",
+    headers: {
+      apikey: cfg.key,
+      Authorization: `Bearer ${cfg.key}`,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    return false;
+  }
+
+  const rows = (await res.json()) as Array<Record<string, unknown>>;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
   const rate = allowRequest({ key: RL_KEY_GET, ip, capacity: 240, windowSeconds: 60 });
@@ -236,7 +287,7 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
     );
@@ -246,8 +297,8 @@ export async function GET(request: Request): Promise<Response> {
 
   // Query params:
   // - scope=agent|visitor (optional)
-  // - sessionId (optional, recommended for visitor)
-  // - userId (optional, recommended for agent)
+  // - sessionId (optional)
+  // - userId (optional)
   // - status=online|away|offline (optional)
   // - limit, offset
   const scopeParam = url.searchParams.get("scope");
@@ -257,25 +308,17 @@ export async function GET(request: Request): Promise<Response> {
 
   const limit = (() => {
     const v = url.searchParams.get("limit");
-    if (!isNonEmptyString(v)) {
-      return 50;
-    }
+    if (!isNonEmptyString(v)) return 50;
     const n = Number.parseInt(v, 10);
-    if (Number.isNaN(n)) {
-      return 50;
-    }
+    if (Number.isNaN(n)) return 50;
     return Math.min(200, Math.max(1, n));
   })();
 
   const offset = (() => {
     const v = url.searchParams.get("offset");
-    if (!isNonEmptyString(v)) {
-      return 0;
-    }
+    if (!isNonEmptyString(v)) return 0;
     const n = Number.parseInt(v, 10);
-    if (Number.isNaN(n)) {
-      return 0;
-    }
+    if (Number.isNaN(n)) return 0;
     return Math.min(100_000, Math.max(0, n));
   })();
 
@@ -298,18 +341,11 @@ export async function GET(request: Request): Promise<Response> {
     filters.push({ key: "status", value: `eq.${st}` });
   }
 
-  // Staleness window:
-  // Treat records older than LIVECHAT_PRESENCE_TTL_SECONDS as offline (client can do this too),
-  // but we still return the raw records so admin can debug.
   const ttlSeconds = (() => {
     const env = process.env.LIVECHAT_PRESENCE_TTL_SECONDS;
-    if (!isNonEmptyString(env)) {
-      return 45;
-    }
+    if (!isNonEmptyString(env)) return 45;
     const n = Number.parseInt(env, 10);
-    if (Number.isNaN(n)) {
-      return 45;
-    }
+    if (Number.isNaN(n)) return 45;
     return Math.min(3600, Math.max(10, n));
   })();
 
@@ -349,17 +385,11 @@ export async function GET(request: Request): Promise<Response> {
     const rows = (await res.json()) as Array<Record<string, unknown>>;
     const contentRange = res.headers.get("content-range");
     const total = (() => {
-      if (!isNonEmptyString(contentRange)) {
-        return null;
-      }
+      if (!isNonEmptyString(contentRange)) return null;
       const parts = contentRange.split("/");
-      if (parts.length !== 2) {
-        return null;
-      }
+      if (parts.length !== 2) return null;
       const totalStr = parts[1]?.trim();
-      if (!isNonEmptyString(totalStr) || totalStr === "*") {
-        return null;
-      }
+      if (!isNonEmptyString(totalStr) || totalStr === "*") return null;
       const n = Number.parseInt(totalStr, 10);
       return Number.isNaN(n) ? null : n;
     })();
@@ -380,12 +410,7 @@ export async function GET(request: Request): Promise<Response> {
       });
 
     return NextResponse.json(
-      {
-        ok: true,
-        ttlSeconds,
-        presence,
-        page: { limit, offset, total },
-      },
+      { ok: true, ttlSeconds, presence, page: { limit, offset, total } },
       { status: 200, headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
@@ -417,7 +442,7 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
     );
@@ -450,9 +475,49 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ ok: false, error: "Visitor presence requires 'sessionId'." }, { status: 400 });
   }
 
+  if (scope === "visitor") {
+    const visitorToken = getVisitorToken(request);
+    if (!visitorToken) {
+      return NextResponse.json(
+        { ok: false, error: "Missing header 'x-livechat-visitor-token'." },
+        { status: 401 },
+      );
+    }
+
+    // If presence row already exists, ensure token matches.
+    const ok = await verifyVisitorPresenceToken({ cfg, sessionId: sessionId as string, visitorToken });
+    // If it doesn't exist yet, verification returns false, so we allow first insert by attaching the token.
+    // If it DOES exist but token mismatches, we should block.
+    // We can't distinguish "doesn't exist" vs "exists but bad token" without an extra read,
+    // so we do a lightweight read here only when verify fails.
+    if (!ok) {
+      const probeUrl = new URL(`${cfg.url}/rest/v1/${encodeURIComponent(cfg.table)}`);
+      probeUrl.searchParams.set("select", "id");
+      probeUrl.searchParams.set("scope", "eq.visitor");
+      probeUrl.searchParams.set("session_id", `eq.${sessionId}`);
+      probeUrl.searchParams.set("limit", "1");
+
+      const probe = await fetch(probeUrl.toString(), {
+        method: "GET",
+        headers: {
+          apikey: cfg.key,
+          Authorization: `Bearer ${cfg.key}`,
+          Accept: "application/json",
+        },
+        cache: "no-store",
+      });
+
+      if (probe.ok) {
+        const rows = (await probe.json()) as Array<Record<string, unknown>>;
+        const exists = Array.isArray(rows) && rows.length > 0;
+        if (exists) {
+          return NextResponse.json({ ok: false, error: "Unauthorized to update this session presence." }, { status: 403 });
+        }
+      }
+    }
+  }
+
   if (scope === "agent") {
-    // If you have real admin auth later, wire it in here.
-    // For now, require the agent secret for any agent presence updates.
     if (!isAgentAuthorized(request)) {
       return NextResponse.json({ ok: false, error: "Unauthorized to update agent presence." }, { status: 401 });
     }
@@ -462,7 +527,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const message = sanitizeString(body.message, 220);
-  const meta = isPlainObject(body.meta) ? body.meta : undefined;
+  const metaIncoming = isPlainObject(body.meta) ? body.meta : undefined;
 
   const nowIso = new Date().toISOString();
 
@@ -472,27 +537,26 @@ export async function POST(request: Request): Promise<Response> {
     last_seen_at: nowIso,
   };
 
-  if (sessionId) {
-    upsertPayload.session_id = sessionId;
+  if (sessionId) upsertPayload.session_id = sessionId;
+  if (userId) upsertPayload.user_id = userId;
+  if (message) upsertPayload.message = message;
+
+  if (scope === "visitor") {
+    const visitorToken = getVisitorToken(request);
+    if (visitorToken) {
+      upsertPayload.meta = {
+        ...(metaIncoming ?? {}),
+        sessionToken: visitorToken,
+      };
+    } else if (metaIncoming) {
+      upsertPayload.meta = metaIncoming;
+    }
+  } else {
+    if (metaIncoming) {
+      upsertPayload.meta = metaIncoming;
+    }
   }
 
-  if (userId) {
-    upsertPayload.user_id = userId;
-  }
-
-  if (message) {
-    upsertPayload.message = message;
-  }
-
-  if (meta) {
-    upsertPayload.meta = meta;
-  }
-
-  // We need a deterministic upsert key.
-  // Convention:
-  // - visitor: unique on (scope, session_id)
-  // - agent: unique on (scope, user_id)
-  // This expects your table has a UNIQUE constraint on those combinations.
   const onConflict = scope === "visitor" ? "scope,session_id" : "scope,user_id";
 
   try {
@@ -515,7 +579,13 @@ export async function POST(request: Request): Promise<Response> {
     if (!res.ok) {
       const text = await res.text();
       return NextResponse.json(
-        { ok: false, error: "Failed to upsert presence.", details: text.slice(0, 2000) },
+        {
+          ok: false,
+          error: "Failed to upsert presence.",
+          details: text.slice(0, 2000),
+          hint:
+            "If you see a conflict error, ensure the table has UNIQUE(scope, session_id) for visitors and UNIQUE(scope, user_id) for agents.",
+        },
         { status: 502 },
       );
     }
@@ -525,13 +595,13 @@ export async function POST(request: Request): Promise<Response> {
     const record = first ? normalizePresenceRow(first) : null;
 
     if (!record) {
-      return NextResponse.json(
-        { ok: false, error: "Presence updated but could not be normalized." },
-        { status: 502 },
-      );
+      return NextResponse.json({ ok: false, error: "Presence updated but could not be normalized." }, { status: 502 });
     }
 
-    return NextResponse.json({ ok: true, presence: record }, { status: 200, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { ok: true, presence: record },
+      { status: 200, headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error.";
     return NextResponse.json(

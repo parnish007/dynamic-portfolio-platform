@@ -1,7 +1,7 @@
-// C:\Users\AB\Desktop\portfolio-website\app\(admin)\layout.tsx
+// app/(admin)/admin/layout.tsx
 
-import type { ReactNode } from "react";
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
   title: {
@@ -18,12 +18,6 @@ type AdminLayoutProps = {
   children: ReactNode;
 };
 
-/**
- * Admin Layout
- * - Wraps all admin pages
- * - NO auth logic here (middleware handles auth)
- * - IMPORTANT: No <html> or <body> in nested layouts
- */
 export default function AdminLayout({ children }: AdminLayoutProps) {
   return (
     <div className="admin-shell" data-scope="admin">
@@ -31,13 +25,33 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         <div className="admin-shell__brand">Admin Panel</div>
 
         <nav className="admin-shell__nav">
-          <span className="admin-shell__nav-item">Dashboard</span>
-          <span className="admin-shell__nav-item">Content</span>
-          <span className="admin-shell__nav-item">Projects</span>
-          <span className="admin-shell__nav-item">Blogs</span>
-          <span className="admin-shell__nav-item">Media</span>
-          <span className="admin-shell__nav-item">SEO</span>
-          <span className="admin-shell__nav-item">Settings</span>
+          <a className="admin-shell__nav-item" href="/admin/dashboard">
+            Dashboard
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/content">
+            Content
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/projects">
+            Projects
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/blogs">
+            Blogs
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/media">
+            Media
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/seo">
+            SEO
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/settings">
+            Settings
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/chat">
+            Chat
+          </a>
+          <a className="admin-shell__nav-item" href="/admin/chatbot">
+            Chatbot
+          </a>
         </nav>
       </aside>
 

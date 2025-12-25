@@ -1,4 +1,4 @@
-// C:\Users\AB\Desktop\portfolio-website\components\frontend\SectionRenderer.tsx
+// components/frontend/SectionRenderer.tsx
 
 import Link from "next/link";
 import type { SectionTreeNode, SectionBreadcrumb } from "@/types/section";
@@ -6,46 +6,83 @@ import type { SectionTreeNode, SectionBreadcrumb } from "@/types/section";
 type SectionRendererProps = {
   section: SectionTreeNode;
   breadcrumbs?: SectionBreadcrumb[];
-  mode?: "default" | "listing";
 };
 
-/* -------------------------------------------------------------------------- */
-/* Styling helpers                                                            */
-/* -------------------------------------------------------------------------- */
+function safeText(input: unknown, fallback: string): string {
+  if (typeof input !== "string") {
+    return fallback;
+  }
+  const t = input.trim();
+  return t.length > 0 ? t : fallback;
+}
 
-function densityClass(density: SectionTreeNode["density"]): string {
-  if (density === "compact") return "gap-3";
-  if (density === "spacious") return "gap-8";
+function normLower(input: unknown): string {
+  if (typeof input !== "string") {
+    return "";
+  }
+  return input.trim().toLowerCase();
+}
+
+function normalizeInternalPath(input: unknown): string {
+  const raw = typeof input === "string" ? input.trim() : "";
+  if (!raw) {
+    return "/";
+  }
+
+  // Reject external URLs (safety)
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    return "/";
+  }
+
+  // Ensure it starts with /
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+
+  // Collapse repeated slashes
+  const cleaned = withSlash.replace(/\/{2,}/g, "/");
+
+  return cleaned;
+}
+
+function densityClass(density: unknown): string {
+  const d = normLower(density);
+  if (d === "compact") return "gap-3";
+  if (d === "spacious") return "gap-8";
   return "gap-5";
 }
 
-function gridClass(preset: SectionTreeNode["layoutPreset"]): string {
-  if (preset === "list") return "grid grid-cols-1";
-  if (preset === "timeline") return "grid grid-cols-1 gap-6";
-  if (preset === "cards") return "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
-  if (preset === "three") return "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
+function gridClass(preset: unknown): string {
+  const p = normLower(preset);
+
+  if (p === "list") return "grid grid-cols-1";
+  if (p === "timeline") return "grid grid-cols-1 gap-6";
+  if (p === "cards") return "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
+  if (p === "three") return "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
+
+  // default
   return "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
 }
 
-function orientationClass(orientation: SectionTreeNode["orientation"]): string {
-  return orientation === "horizontal" ? "flex-row" : "flex-col";
+function orientationClass(orientation: unknown): string {
+  return normLower(orientation) === "horizontal" ? "flex-row" : "flex-col";
 }
 
 function isRenderable(node: SectionTreeNode): boolean {
-  return Boolean(node.visible && node.published);
+  // Defensive: treat missing flags as false in public UI
+  const visible = node.visible === true;
+  const published = node.published === true;
+  return visible && published;
 }
 
-/* -------------------------------------------------------------------------- */
-/* UI pieces                                                                  */
-/* -------------------------------------------------------------------------- */
-
 function SectionCard({ node }: { node: SectionTreeNode }) {
-  const title = node.title?.trim() || "Untitled";
-  const desc = node.description?.trim() || "";
+  const title = safeText(node.title, "Untitled");
+  const desc = safeText(node.description, "");
+  const href = normalizeInternalPath(node.path);
+
+  const subfoldersCount = Array.isArray(node.children) ? node.children.filter(isRenderable).length : 0;
 
   return (
     <Link
-      href={node.path}
+      href={href}
       className="group rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5 transition hover:bg-zinc-900/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
     >
       <div className="flex items-start justify-between gap-3">
@@ -63,10 +100,7 @@ function SectionCard({ node }: { node: SectionTreeNode }) {
 
       <div className="mt-4 flex items-center gap-3 text-xs text-zinc-500">
         <span>
-          Subfolders:{" "}
-          <span className="text-zinc-300">
-            {node.children?.filter(isRenderable).length ?? 0}
-          </span>
+          Subfolders: <span className="text-zinc-300">{subfoldersCount}</span>
         </span>
         <span className="h-1 w-1 rounded-full bg-zinc-700" />
         <span>
@@ -84,9 +118,7 @@ function SectionCard({ node }: { node: SectionTreeNode }) {
 function ThreeFallbackBanner() {
   return (
     <div className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5">
-      <p className="text-sm text-zinc-300">
-        3D preview is available for this section on supported devices.
-      </p>
+      <p className="text-sm text-zinc-300">3D preview is available for this section on supported devices.</p>
       <p className="mt-1 text-xs text-zinc-500">(Content remains fully accessible without 3D.)</p>
     </div>
   );
@@ -100,17 +132,19 @@ function BreadcrumbsBar({ items }: { items: SectionBreadcrumb[] }) {
       <ol className="flex flex-wrap items-center gap-2">
         {items.map((b, idx) => {
           const isLast = idx === items.length - 1;
+          const title = safeText(b.title, "Untitled");
+          const href = normalizeInternalPath(b.path);
 
           return (
-            <li key={b.path} className="flex items-center gap-2">
+            <li key={`${href}-${idx}`} className="flex items-center gap-2">
               {isLast ? (
-                <span className="text-zinc-200">{b.title || "Untitled"}</span>
+                <span className="text-zinc-200">{title}</span>
               ) : (
                 <Link
-                  href={b.path}
+                  href={href}
                   className="rounded hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
                 >
-                  {b.title || "Untitled"}
+                  {title}
                 </Link>
               )}
 
@@ -127,22 +161,16 @@ function BreadcrumbsBar({ items }: { items: SectionBreadcrumb[] }) {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Main Renderer                                                              */
-/* -------------------------------------------------------------------------- */
+export default function SectionRenderer({ section, breadcrumbs = [] }: SectionRendererProps) {
+  const title = safeText(section.title, "Untitled");
+  const description = safeText(section.description, "");
 
-export default function SectionRenderer({
-  section,
-  breadcrumbs = [],
-  mode = "default",
-}: SectionRendererProps) {
-  const title = section.title?.trim() || "Untitled";
-  const description = section.description?.trim() || "";
-  const children = (section.children ?? []).filter(isRenderable);
+  const children = Array.isArray(section.children) ? section.children.filter(isRenderable) : [];
 
   const density = densityClass(section.density);
   const presetGrid = gridClass(section.layoutPreset);
-  const showThreeFallback = section.layoutPreset === "three" && section.enable3d;
+
+  const showThreeFallback = normLower(section.layoutPreset) === "three" && section.enable3d === true;
 
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-10">
@@ -156,9 +184,7 @@ export default function SectionRenderer({
             {description ? (
               <p className="mt-3 max-w-2xl text-sm text-zinc-300 sm:text-base">{description}</p>
             ) : (
-              <p className="mt-3 max-w-2xl text-sm text-zinc-500 sm:text-base">
-                No description provided.
-              </p>
+              <p className="mt-3 max-w-2xl text-sm text-zinc-500 sm:text-base">No description provided.</p>
             )}
           </header>
         </div>
@@ -188,8 +214,6 @@ export default function SectionRenderer({
           )}
         </div>
       </section>
-
-      {mode === "listing" ? null : null}
     </main>
   );
 }

@@ -1,3 +1,5 @@
+// app/loading.tsx
+
 export default function Loading() {
   return (
     <main className="flex min-h-dvh items-center justify-center bg-zinc-950">

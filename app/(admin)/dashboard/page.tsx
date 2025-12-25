@@ -1,12 +1,18 @@
 // app/(admin)/dashboard/page.tsx
+
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 
 export const metadata: Metadata = {
   title: "Dashboard",
   robots: { index: false, follow: false },
 };
 
-type ApiErr = { ok: false; error: string; details?: string };
+type ApiErr = {
+  ok: false;
+  error: string;
+  details?: string;
+};
 
 type AnalyticsSummaryOk = {
   ok: true;
@@ -27,10 +33,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function safeText(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -38,21 +40,43 @@ function safeText(value: unknown): string {
   return "";
 }
 
+function getRequestOrigin(): string | null {
+  const h = headers();
+
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+
+  if (!host) return null;
+
+  return `${proto}://${host}`;
+}
+
 async function safeJson<T>(res: Response): Promise<T | ApiErr> {
   try {
     const data: unknown = await res.json();
+
     if (isPlainObject(data) && data.ok === false && typeof data.error === "string") {
       return data as ApiErr;
     }
+
     return data as T;
   } catch {
     return { ok: false, error: "Invalid JSON response." };
   }
 }
 
-async function getAnalyticsSummary(): Promise<AnalyticsSummaryOk | ApiErr> {
+async function getAnalyticsSummary(origin: string | null): Promise<AnalyticsSummaryOk | ApiErr> {
+  if (!origin) return { ok: false, error: "Missing request origin. Cannot call internal API." };
+
   try {
-    const res = await fetch("/api/analytics/summary", { cache: "no-store" });
+    const res = await fetch(new URL("/api/analytics/summary", origin), {
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      return { ok: false, error: "Analytics API returned an error.", details: `HTTP ${res.status}` };
+    }
+
     return await safeJson<AnalyticsSummaryOk>(res);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error.";
@@ -60,9 +84,18 @@ async function getAnalyticsSummary(): Promise<AnalyticsSummaryOk | ApiErr> {
   }
 }
 
-async function getSettings(): Promise<SettingsOk | ApiErr> {
+async function getSettings(origin: string | null): Promise<SettingsOk | ApiErr> {
+  if (!origin) return { ok: false, error: "Missing request origin. Cannot call internal API." };
+
   try {
-    const res = await fetch("/api/settings", { cache: "no-store" });
+    const res = await fetch(new URL("/api/settings", origin), {
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      return { ok: false, error: "Settings API returned an error.", details: `HTTP ${res.status}` };
+    }
+
     return await safeJson<SettingsOk>(res);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error.";
@@ -73,26 +106,34 @@ async function getSettings(): Promise<SettingsOk | ApiErr> {
 function formatDate(value: unknown): string {
   const s = safeText(value).trim();
   if (!s) return "-";
+
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
+
   return d.toISOString();
 }
 
 function readNumber(obj: Record<string, unknown> | null, keys: string[]): number | null {
   if (!obj) return null;
+
   for (const k of keys) {
     const v = obj[k];
+
     if (typeof v === "number" && Number.isFinite(v)) return v;
+
     if (typeof v === "string") {
       const n = Number.parseFloat(v);
       if (Number.isFinite(n)) return n;
     }
   }
+
   return null;
 }
 
 export default async function AdminDashboardPage() {
-  const [summaryRes, settingsRes] = await Promise.all([getAnalyticsSummary(), getSettings()]);
+  const origin = getRequestOrigin();
+
+  const [summaryRes, settingsRes] = await Promise.all([getAnalyticsSummary(origin), getSettings(origin)]);
 
   const summaryOk = isPlainObject(summaryRes) && (summaryRes as AnalyticsSummaryOk).ok === true;
   const summary = summaryOk ? (summaryRes as AnalyticsSummaryOk) : null;
@@ -190,7 +231,7 @@ export default async function AdminDashboardPage() {
               lineHeight: 1.5,
             }}
           >
-{JSON.stringify(summaryRes, null, 2)}
+            {JSON.stringify(summaryRes, null, 2)}
           </pre>
         </details>
       </div>

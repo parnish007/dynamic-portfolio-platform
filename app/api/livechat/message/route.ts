@@ -12,16 +12,13 @@ type LivechatMessage = {
   content: string;
   createdAt: string | null;
 
-  // Optional metadata (admin-controlled, schema-flexible).
   meta: Record<string, unknown> | null;
-
-  // Full raw row for flexibility.
   raw: Record<string, unknown>;
 };
 
 type SendMessageBody = {
   sessionId: string;
-  role?: LivechatRole; // default: visitor
+  role?: LivechatRole;
   content: string;
   meta?: Record<string, unknown>;
 };
@@ -64,6 +61,10 @@ function getClientIp(request: Request): string {
  * Best-effort in-memory rate limiter.
  * - GET: 180 req/min/IP
  * - POST: 60 req/min/IP
+ *
+ * NOTE:
+ * Not reliable in serverless/multi-instance environments.
+ * Treat as best-effort only.
  */
 type RateEntry = { tokens: number; lastRefillMs: number };
 const RL_KEY_GET = "__portfolio_livechat_message_rl_get__";
@@ -112,9 +113,8 @@ function allowRequest(args: {
 
 /**
  * Optional write protection for agent/system messages.
- * - Visitors can always create "visitor" messages.
- * - If LIVECHAT_AGENT_SECRET is set, then agent/system messages require header:
- *   x-livechat-agent-secret: <secret>
+ * If LIVECHAT_AGENT_SECRET is set, then agent/system messages require header:
+ * x-livechat-agent-secret: <secret>
  */
 function canSendAsAgent(request: Request): boolean {
   const secret = process.env.LIVECHAT_AGENT_SECRET;
@@ -128,6 +128,25 @@ function canSendAsAgent(request: Request): boolean {
   return header.trim() === secret.trim();
 }
 
+/**
+ * Visitor session token protection.
+ * Public clients MUST send:
+ * x-livechat-visitor-token: <random token>
+ *
+ * We store it as meta.sessionToken on message rows (best effort).
+ */
+function getVisitorToken(request: Request): string | null {
+  const token = request.headers.get("x-livechat-visitor-token");
+  if (!isNonEmptyString(token)) {
+    return null;
+  }
+  const t = token.trim();
+  if (t.length < 12 || t.length > 200) {
+    return null;
+  }
+  return t;
+}
+
 function getSupabaseConfig(): { url: string; key: string; table: string } | null {
   const url =
     process.env.SUPABASE_URL ??
@@ -135,8 +154,8 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
+  // ✅ SECURITY: public route must never use SERVICE_ROLE
   const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
     process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
     "";
@@ -221,6 +240,46 @@ function buildPostgrestUrl(args: {
   return url;
 }
 
+/**
+ * Best-effort authorization: ensure the visitor token matches meta->>sessionToken for this session.
+ *
+ * This requires `meta` to be jsonb and stored on rows.
+ */
+async function verifyVisitorToken(args: {
+  cfg: { url: string; key: string; table: string };
+  sessionId: string;
+  visitorToken: string;
+}): Promise<boolean> {
+  const { cfg, sessionId, visitorToken } = args;
+
+  const verifyUrl = new URL(`${cfg.url}/rest/v1/${encodeURIComponent(cfg.table)}`);
+  verifyUrl.searchParams.set("select", "id");
+
+  // Match any row in the session that has meta.sessionToken == visitorToken
+  // PostgREST json path syntax:
+  // meta->>sessionToken=eq.<token>
+  verifyUrl.searchParams.set("session_id", `eq.${sessionId}`);
+  verifyUrl.searchParams.set("meta->>sessionToken", `eq.${visitorToken}`);
+  verifyUrl.searchParams.set("limit", "1");
+
+  const res = await fetch(verifyUrl.toString(), {
+    method: "GET",
+    headers: {
+      apikey: cfg.key,
+      Authorization: `Bearer ${cfg.key}`,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    return false;
+  }
+
+  const rows = (await res.json()) as Array<Record<string, unknown>>;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
   const rate = allowRequest({ key: RL_KEY_GET, ip, capacity: 180, windowSeconds: 60 });
@@ -241,35 +300,44 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
     );
   }
 
+  const visitorToken = getVisitorToken(request);
+  if (!visitorToken) {
+    return NextResponse.json(
+      { ok: false, error: "Missing header 'x-livechat-visitor-token'." },
+      { status: 401 },
+    );
+  }
+
   const url = new URL(request.url);
 
-  // Required: sessionId
   const sessionId = url.searchParams.get("sessionId");
   if (!isNonEmptyString(sessionId)) {
     return NextResponse.json({ ok: false, error: "Missing query param 'sessionId'." }, { status: 400 });
   }
 
-  // Pagination
+  const sid = sessionId.trim();
+
+  // ✅ Enforce token ownership (best-effort)
+  const tokenOk = await verifyVisitorToken({ cfg, sessionId: sid, visitorToken });
+  if (!tokenOk) {
+    return NextResponse.json({ ok: false, error: "Unauthorized for this session." }, { status: 403 });
+  }
+
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 200);
   const offset = clampInt(url.searchParams.get("offset"), 0, 0, 100_000);
 
-  // Ordering
   const direction = url.searchParams.get("direction");
   const orderDir = direction === "asc" ? "asc" : "desc";
   const order = `created_at.${orderDir},id.${orderDir}`;
 
-  // Filters
-  const filters: Array<{ key: string; value: string }> = [
-    { key: "session_id", value: `eq.${sessionId.trim()}` },
-  ];
+  const filters: Array<{ key: string; value: string }> = [{ key: "session_id", value: `eq.${sid}` }];
 
-  // Optional: since (ISO date) to fetch only new messages
   const since = url.searchParams.get("since");
   if (isNonEmptyString(since)) {
     const d = new Date(since.trim());
@@ -312,19 +380,13 @@ export async function GET(request: Request): Promise<Response> {
 
     const rows = (await res.json()) as Array<Record<string, unknown>>;
 
-    const contentRange = res.headers.get("content-range"); // e.g. 0-49/320
+    const contentRange = res.headers.get("content-range");
     const total = (() => {
-      if (!isNonEmptyString(contentRange)) {
-        return null;
-      }
+      if (!isNonEmptyString(contentRange)) return null;
       const parts = contentRange.split("/");
-      if (parts.length !== 2) {
-        return null;
-      }
+      if (parts.length !== 2) return null;
       const totalStr = parts[1]?.trim();
-      if (!isNonEmptyString(totalStr) || totalStr === "*") {
-        return null;
-      }
+      if (!isNonEmptyString(totalStr) || totalStr === "*") return null;
       const n = Number.parseInt(totalStr, 10);
       return Number.isNaN(n) ? null : n;
     })();
@@ -334,12 +396,7 @@ export async function GET(request: Request): Promise<Response> {
       .filter((m): m is LivechatMessage => m !== null);
 
     return NextResponse.json(
-      {
-        ok: true,
-        sessionId: sessionId.trim(),
-        messages,
-        page: { limit, offset, total },
-      },
+      { ok: true, sessionId: sid, messages, page: { limit, offset, total } },
       { status: 200, headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
@@ -371,9 +428,17 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
+    );
+  }
+
+  const visitorToken = getVisitorToken(request);
+  if (!visitorToken) {
+    return NextResponse.json(
+      { ok: false, error: "Missing header 'x-livechat-visitor-token'." },
+      { status: 401 },
     );
   }
 
@@ -407,17 +472,20 @@ export async function POST(request: Request): Promise<Response> {
   const sessionId = body.sessionId.trim();
   const content = body.content.trim().slice(0, 4000);
 
-  const meta = isPlainObject(body.meta) ? body.meta : undefined;
+  const metaIncoming = isPlainObject(body.meta) ? body.meta : undefined;
+
+  // ✅ Ensure the session token is stored on rows
+  const meta: Record<string, unknown> = {
+    ...(metaIncoming ?? {}),
+    sessionToken: visitorToken,
+  };
 
   const insertPayload: Record<string, unknown> = {
     session_id: sessionId,
     role,
     content,
+    meta,
   };
-
-  if (meta) {
-    insertPayload.meta = meta;
-  }
 
   try {
     const insertUrl = new URL(`${cfg.url}/rest/v1/${encodeURIComponent(cfg.table)}`);
@@ -448,13 +516,13 @@ export async function POST(request: Request): Promise<Response> {
     const message = first ? normalizeMessageRow(first) : null;
 
     if (!message) {
-      return NextResponse.json(
-        { ok: false, error: "Message sent but could not be normalized." },
-        { status: 502 },
-      );
+      return NextResponse.json({ ok: false, error: "Message sent but could not be normalized." }, { status: 502 });
     }
 
-    return NextResponse.json({ ok: true, message }, { status: 201, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { ok: true, message },
+      { status: 201, headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error.";
     return NextResponse.json(

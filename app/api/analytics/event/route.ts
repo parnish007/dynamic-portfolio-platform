@@ -1,3 +1,5 @@
+// app/api/analytics/event/route.ts
+
 import { NextResponse } from "next/server";
 
 type AnalyticsEventName =
@@ -15,10 +17,12 @@ type AnalyticsEventName =
 
 type AnalyticsEventPayload = {
   name: AnalyticsEventName;
+
   /**
    * Path on the site, e.g. "/project/my-slug"
    */
   path: string;
+
   /**
    * Optional object identifiers
    */
@@ -81,10 +85,7 @@ type AnalyticsEventResponse = {
 };
 
 function jsonError(status: number, message: string) {
-  return NextResponse.json(
-    { message },
-    { status }
-  );
+  return NextResponse.json({ message }, { status });
 }
 
 function safeTrim(v: unknown, maxLen: number): string {
@@ -129,6 +130,38 @@ function clampNumber(v: unknown, min: number, max: number, fallback: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function isHttpUrl(raw: string): boolean {
+  const s = raw.trim();
+  if (!s) return false;
+  try {
+    const u = new URL(s);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function compactUtm(utm: AnalyticsEventPayload["utm"] | undefined) {
+  if (!utm) return undefined;
+
+  const source = safeTrim(utm.source, 120) || "";
+  const medium = safeTrim(utm.medium, 120) || "";
+  const campaign = safeTrim(utm.campaign, 120) || "";
+  const term = safeTrim(utm.term, 120) || "";
+  const content = safeTrim(utm.content, 120) || "";
+
+  const hasAny = Boolean(source || medium || campaign || term || content);
+  if (!hasAny) return undefined;
+
+  return {
+    source: source || undefined,
+    medium: medium || undefined,
+    campaign: campaign || undefined,
+    term: term || undefined,
+    content: content || undefined,
+  };
+}
+
 /**
  * Very small in-memory rate limiter.
  * Works in dev and single-node; in serverless it becomes "best effort".
@@ -143,6 +176,22 @@ type RateEntry = {
 };
 
 const ipRate: Map<string, RateEntry> = new Map();
+let lastCleanupAt = 0;
+
+function cleanupRateMap(now: number) {
+  /**
+   * Prevent unbounded memory growth in long-running servers.
+   * Cleanup at most once per minute.
+   */
+  if (now - lastCleanupAt < 60_000) return;
+  lastCleanupAt = now;
+
+  for (const [ip, entry] of ipRate.entries()) {
+    if (entry.resetAt <= now) {
+      ipRate.delete(ip);
+    }
+  }
+}
 
 function getClientIp(req: Request) {
   /**
@@ -162,6 +211,8 @@ function getClientIp(req: Request) {
 
 function rateLimitOk(ip: string) {
   const now = Date.now();
+  cleanupRateMap(now);
+
   const existing = ipRate.get(ip);
 
   if (!existing || existing.resetAt <= now) {
@@ -196,18 +247,12 @@ async function persistEvent(_event: AnalyticsEventPayload): Promise<boolean> {
 export async function POST(req: Request) {
   const contentType = req.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
-    return jsonError(
-      415,
-      "Unsupported content type. Use application/json."
-    );
+    return jsonError(415, "Unsupported content type. Use application/json.");
   }
 
   const ip = getClientIp(req);
   if (!rateLimitOk(ip)) {
-    return jsonError(
-      429,
-      "Too many requests. Please slow down."
-    );
+    return jsonError(429, "Too many requests. Please slow down.");
   }
 
   let body: AnalyticsEventPayload | null = null;
@@ -215,31 +260,60 @@ export async function POST(req: Request) {
   try {
     body = (await req.json()) as AnalyticsEventPayload;
   } catch {
-    return jsonError(
-      400,
-      "Invalid JSON body."
-    );
+    return jsonError(400, "Invalid JSON body.");
   }
 
   const name = normalizeEventName(body?.name);
   if (!name) {
-    return jsonError(
-      400,
-      "Invalid or missing field: name"
-    );
+    return jsonError(400, "Invalid or missing field: name");
   }
 
   const path = safeTrim(body?.path, 512);
   if (!path || !isValidPath(path)) {
-    return jsonError(
-      400,
-      "Invalid or missing field: path (must be site-relative like /project/x)"
-    );
+    return jsonError(400, "Invalid or missing field: path (must be site-relative like /project/x)");
   }
 
-  const ts = typeof body?.ts === "number"
-    ? clampNumber(body.ts, 0, Date.now() + 60_000, Date.now())
-    : Date.now();
+  const ts =
+    typeof body?.ts === "number"
+      ? clampNumber(body.ts, 0, Date.now() + 60_000, Date.now())
+      : Date.now();
+
+  const referrer = safeTrim(body?.referrer, 800) || undefined;
+
+  const outboundUrl = body?.outbound ? safeTrim(body.outbound.url, 800) : "";
+  const outboundLabel = body?.outbound ? safeTrim(body.outbound.label, 120) : "";
+
+  const warnings: string[] = [];
+
+  if (referrer && (referrer.includes("\n") || referrer.includes("\r"))) {
+    warnings.push("Referrer contained invalid characters and may be ignored downstream.");
+  }
+
+  /**
+   * outbound_click must have a valid absolute http(s) URL.
+   * For other event types, outbound is optional and will be dropped if invalid/empty.
+   */
+  let outbound: AnalyticsEventPayload["outbound"] | undefined = undefined;
+
+  if (name === "outbound_click") {
+    if (!outboundUrl || !isHttpUrl(outboundUrl)) {
+      return jsonError(400, "outbound_click requires outbound.url to be a valid http(s) URL");
+    }
+
+    outbound = {
+      url: outboundUrl,
+      label: outboundLabel || undefined,
+    };
+  } else if (outboundUrl && isHttpUrl(outboundUrl)) {
+    outbound = {
+      url: outboundUrl,
+      label: outboundLabel || undefined,
+    };
+  } else if (outboundUrl) {
+    warnings.push("Outbound URL was provided but invalid; dropped.");
+  }
+
+  const utm = compactUtm(body?.utm);
 
   const payload: AnalyticsEventPayload = {
     name,
@@ -250,45 +324,13 @@ export async function POST(req: Request) {
     sectionSlug: safeTrim(body?.sectionSlug, 160) || undefined,
     projectSlug: safeTrim(body?.projectSlug, 160) || undefined,
     blogSlug: safeTrim(body?.blogSlug, 160) || undefined,
-    referrer: safeTrim(body?.referrer, 800) || undefined,
-    utm: {
-      source: safeTrim(body?.utm?.source, 120) || undefined,
-      medium: safeTrim(body?.utm?.medium, 120) || undefined,
-      campaign: safeTrim(body?.utm?.campaign, 120) || undefined,
-      term: safeTrim(body?.utm?.term, 120) || undefined,
-      content: safeTrim(body?.utm?.content, 120) || undefined,
-    },
-    outbound: body?.outbound
-      ? {
-          url: safeTrim(body.outbound.url, 800),
-          label: safeTrim(body.outbound.label, 120) || undefined,
-        }
-      : undefined,
+    referrer,
+    utm,
+    outbound,
     visitorId: safeTrim(body?.visitorId, 120) || undefined,
     sessionId: safeTrim(body?.sessionId, 120) || undefined,
     ts,
   };
-
-  const warnings: string[] = [];
-
-  if (name === "outbound_click") {
-    const outUrl = payload.outbound?.url ?? "";
-    if (!outUrl || !outUrl.startsWith("http")) {
-      return jsonError(
-        400,
-        "outbound_click requires outbound.url starting with http/https"
-      );
-    }
-  }
-
-  if (payload.referrer && payload.referrer.length > 0) {
-    /**
-     * Prevent referrer payload injection into logs later.
-     */
-    if (payload.referrer.includes("\n") || payload.referrer.includes("\r")) {
-      warnings.push("Referrer contained invalid characters and may be ignored downstream.");
-    }
-  }
 
   let stored = false;
 
@@ -296,10 +338,7 @@ export async function POST(req: Request) {
     stored = await persistEvent(payload);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Event persistence failed";
-    return jsonError(
-      500,
-      message
-    );
+    return jsonError(500, message);
   }
 
   const response: AnalyticsEventResponse = {
@@ -317,8 +356,5 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  return jsonError(
-    405,
-    "Method not allowed. Use POST."
-  );
+  return jsonError(405, "Method not allowed. Use POST.");
 }

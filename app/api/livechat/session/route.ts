@@ -15,11 +15,9 @@ type LivechatSession = {
   lastMessageAt: string | null;
   title: string | null;
 
-  // Optional assignment / routing fields (admin-controlled).
   assignedAgentId: string | null;
   priority: string | null;
 
-  // Extra metadata (schema-flexible).
   meta: Record<string, unknown> | null;
 
   raw: Record<string, unknown>;
@@ -141,11 +139,9 @@ function allowRequest(args: {
 }
 
 /**
- * Optional admin protection for session updates (PATCH).
- * If LIVECHAT_AGENT_SECRET is set, then PATCH requires:
- *   x-livechat-agent-secret: <secret>
- *
- * POST (create) remains open for visitors.
+ * Agent protection:
+ * If LIVECHAT_AGENT_SECRET is set, then agent-only operations require:
+ * x-livechat-agent-secret: <secret>
  */
 function isAgentAuthorized(request: Request): boolean {
   const secret = process.env.LIVECHAT_AGENT_SECRET;
@@ -159,6 +155,23 @@ function isAgentAuthorized(request: Request): boolean {
   return header.trim() === secret.trim();
 }
 
+/**
+ * Visitor token protection:
+ * Public clients MUST send:
+ * x-livechat-visitor-token: <random token>
+ */
+function getVisitorToken(request: Request): string | null {
+  const token = request.headers.get("x-livechat-visitor-token");
+  if (!isNonEmptyString(token)) {
+    return null;
+  }
+  const t = token.trim();
+  if (t.length < 12 || t.length > 200) {
+    return null;
+  }
+  return t;
+}
+
 function getSupabaseConfig(): { url: string; key: string; table: string } | null {
   const url =
     process.env.SUPABASE_URL ??
@@ -166,8 +179,8 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
+  // ✅ SECURITY: public route must never use SERVICE_ROLE
   const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
     process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
     "";
@@ -184,7 +197,6 @@ function getSupabaseConfig(): { url: string; key: string; table: string } | null
 }
 
 function generateSessionId(): string {
-  // URL-safe, high entropy
   return crypto.randomBytes(16).toString("hex");
 }
 
@@ -275,6 +287,40 @@ function buildPostgrestUrl(args: {
   return url;
 }
 
+/**
+ * Verify a visitor owns a session by matching meta->>sessionToken.
+ */
+async function verifyVisitorOwnsSession(args: {
+  cfg: { url: string; key: string; table: string };
+  sessionId: string;
+  visitorToken: string;
+}): Promise<boolean> {
+  const { cfg, sessionId, visitorToken } = args;
+
+  const verifyUrl = new URL(`${cfg.url}/rest/v1/${encodeURIComponent(cfg.table)}`);
+  verifyUrl.searchParams.set("select", "id");
+  verifyUrl.searchParams.set("id", `eq.${sessionId}`);
+  verifyUrl.searchParams.set("meta->>sessionToken", `eq.${visitorToken}`);
+  verifyUrl.searchParams.set("limit", "1");
+
+  const res = await fetch(verifyUrl.toString(), {
+    method: "GET",
+    headers: {
+      apikey: cfg.key,
+      Authorization: `Bearer ${cfg.key}`,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    return false;
+  }
+
+  const rows = (await res.json()) as Array<Record<string, unknown>>;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
   const rate = allowRequest({ key: RL_KEY_GET, ip, capacity: 180, windowSeconds: 60 });
@@ -295,7 +341,7 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
     );
@@ -304,10 +350,8 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
 
   // Query params:
-  // - id: exact session id
-  // - visitorId: exact visitor id
-  // - status=open|closed (optional)
-  // - limit, offset
+  // - id: exact session id (visitor can use ONLY this, and must be authorized)
+  // - visitorId/status/limit/offset: agent-only (requires agent secret)
   const id = url.searchParams.get("id");
   const visitorId = url.searchParams.get("visitorId");
   const statusParam = url.searchParams.get("status");
@@ -315,19 +359,39 @@ export async function GET(request: Request): Promise<Response> {
   const limit = clampInt(url.searchParams.get("limit"), 20, 1, 200);
   const offset = clampInt(url.searchParams.get("offset"), 0, 0, 100_000);
 
+  const isAgentQuery = isNonEmptyString(visitorId) || isNonEmptyString(statusParam) || offset !== 0 || limit !== 20;
+
   const filters: Array<{ key: string; value: string }> = [];
 
   if (isNonEmptyString(id)) {
     filters.push({ key: "id", value: `eq.${id.trim()}` });
   }
 
-  if (isNonEmptyString(visitorId)) {
-    filters.push({ key: "visitor_id", value: `eq.${visitorId.trim()}` });
-  }
+  // Visitor access: must provide id + token, cannot list
+  if (!isAgentQuery && isNonEmptyString(id)) {
+    const visitorToken = getVisitorToken(request);
+    if (!visitorToken) {
+      return NextResponse.json({ ok: false, error: "Missing header 'x-livechat-visitor-token'." }, { status: 401 });
+    }
 
-  if (isNonEmptyString(statusParam)) {
-    const st = normalizeStatus(statusParam);
-    filters.push({ key: "status", value: `eq.${st}` });
+    const owns = await verifyVisitorOwnsSession({ cfg, sessionId: id.trim(), visitorToken });
+    if (!owns) {
+      return NextResponse.json({ ok: false, error: "Unauthorized for this session." }, { status: 403 });
+    }
+  } else {
+    // Anything beyond "get my exact session by id" is agent-only
+    if (!isAgentAuthorized(request)) {
+      return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+    }
+
+    if (isNonEmptyString(visitorId)) {
+      filters.push({ key: "visitor_id", value: `eq.${visitorId.trim()}` });
+    }
+
+    if (isNonEmptyString(statusParam)) {
+      const st = normalizeStatus(statusParam);
+      filters.push({ key: "status", value: `eq.${st}` });
+    }
   }
 
   const order = "last_message_at.desc,started_at.desc,created_at.desc,id.desc";
@@ -367,17 +431,11 @@ export async function GET(request: Request): Promise<Response> {
 
     const contentRange = res.headers.get("content-range");
     const total = (() => {
-      if (!isNonEmptyString(contentRange)) {
-        return null;
-      }
+      if (!isNonEmptyString(contentRange)) return null;
       const parts = contentRange.split("/");
-      if (parts.length !== 2) {
-        return null;
-      }
+      if (parts.length !== 2) return null;
       const totalStr = parts[1]?.trim();
-      if (!isNonEmptyString(totalStr) || totalStr === "*") {
-        return null;
-      }
+      if (!isNonEmptyString(totalStr) || totalStr === "*") return null;
       const n = Number.parseInt(totalStr, 10);
       return Number.isNaN(n) ? null : n;
     })();
@@ -419,10 +477,15 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
     );
+  }
+
+  const visitorToken = getVisitorToken(request);
+  if (!visitorToken) {
+    return NextResponse.json({ ok: false, error: "Missing header 'x-livechat-visitor-token'." }, { status: 401 });
   }
 
   let jsonBody: unknown;
@@ -440,34 +503,29 @@ export async function POST(request: Request): Promise<Response> {
 
   const visitorId = isNonEmptyString(body.visitorId) ? body.visitorId.trim().slice(0, 120) : null;
   const title = sanitizeString(body.title, 140);
-  const meta = isPlainObject(body.meta) ? body.meta : undefined;
+  const metaIncoming = isPlainObject(body.meta) ? body.meta : undefined;
 
   const nowIso = new Date().toISOString();
-
   const newSessionId = generateSessionId();
+
+  // ✅ Store IP/userAgent inside meta to avoid schema dependency
+  const meta: Record<string, unknown> = {
+    ...(metaIncoming ?? {}),
+    sessionToken: visitorToken,
+    visitorIp: ip,
+    userAgent: sanitizeString(request.headers.get("user-agent"), 220),
+  };
 
   const insertPayload: Record<string, unknown> = {
     id: newSessionId,
     status: "open",
     started_at: nowIso,
     last_message_at: nowIso,
+    meta,
   };
 
-  if (visitorId) {
-    insertPayload.visitor_id = visitorId;
-  }
-
-  if (title) {
-    insertPayload.title = title;
-  }
-
-  if (meta) {
-    insertPayload.meta = meta;
-  }
-
-  // Optional visitor identity info
-  // (useful for abuse prevention, analytics, debugging)
-  insertPayload.visitor_ip = ip;
+  if (visitorId) insertPayload.visitor_id = visitorId;
+  if (title) insertPayload.title = title;
 
   try {
     const insertUrl = new URL(`${cfg.url}/rest/v1/${encodeURIComponent(cfg.table)}`);
@@ -483,6 +541,7 @@ export async function POST(request: Request): Promise<Response> {
         Prefer: "return=representation",
       },
       body: JSON.stringify(insertPayload),
+      cache: "no-store",
     });
 
     if (!res.ok) {
@@ -498,10 +557,7 @@ export async function POST(request: Request): Promise<Response> {
     const session = first ? normalizeSessionRow(first) : null;
 
     if (!session) {
-      return NextResponse.json(
-        { ok: false, error: "Session created but could not be normalized." },
-        { status: 502 },
-      );
+      return NextResponse.json({ ok: false, error: "Session created but could not be normalized." }, { status: 502 });
     }
 
     return NextResponse.json({ ok: true, session }, { status: 201, headers: { "Cache-Control": "no-store" } });
@@ -529,7 +585,7 @@ export async function PATCH(request: Request): Promise<Response> {
     });
   }
 
-  // Admin/agent updates should be protected.
+  // Agent/admin updates should be protected.
   if (!isAgentAuthorized(request)) {
     return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
   }
@@ -539,7 +595,7 @@ export async function PATCH(request: Request): Promise<Response> {
     return NextResponse.json(
       {
         ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
+        error: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
       },
       { status: 500 },
     );
@@ -591,7 +647,6 @@ export async function PATCH(request: Request): Promise<Response> {
     patch.meta = isPlainObject(body.meta) ? body.meta : null;
   }
 
-  // Keep last_message_at fresh if session is actively managed.
   patch.updated_at = new Date().toISOString();
 
   if (Object.keys(patch).length === 0) {
@@ -613,6 +668,7 @@ export async function PATCH(request: Request): Promise<Response> {
         Prefer: "return=representation",
       },
       body: JSON.stringify(patch),
+      cache: "no-store",
     });
 
     if (!res.ok) {
@@ -628,10 +684,7 @@ export async function PATCH(request: Request): Promise<Response> {
     const session = first ? normalizeSessionRow(first) : null;
 
     if (!session) {
-      return NextResponse.json(
-        { ok: false, error: "Session updated but could not be normalized." },
-        { status: 502 },
-      );
+      return NextResponse.json({ ok: false, error: "Session updated but could not be normalized." }, { status: 502 });
     }
 
     return NextResponse.json({ ok: true, session }, { status: 200, headers: { "Cache-Control": "no-store" } });

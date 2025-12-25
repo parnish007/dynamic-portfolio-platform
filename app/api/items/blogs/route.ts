@@ -20,8 +20,6 @@ type BlogItem = {
   orderIndex?: number | null;
   createdAt?: string | null;
   updatedAt?: string | null;
-
-  // Keep full row for schema flexibility (admin-controlled).
   raw: Record<string, unknown>;
 };
 
@@ -30,20 +28,14 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function safeInt(value: string | null, fallback: number, min: number, max: number): number {
-  if (!isNonEmptyString(value)) {
-    return fallback;
-  }
+  if (!isNonEmptyString(value)) return fallback;
   const n = Number.parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    return fallback;
-  }
+  if (Number.isNaN(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }
 
 function safeFloat(value: unknown): number | null {
-  if (typeof value === "number" && !Number.isNaN(value)) {
-    return value;
-  }
+  if (typeof value === "number" && !Number.isNaN(value)) return value;
   if (typeof value === "string" && isNonEmptyString(value)) {
     const n = Number.parseFloat(value);
     return Number.isNaN(n) ? null : n;
@@ -52,39 +44,26 @@ function safeFloat(value: unknown): number | null {
 }
 
 function toBool(value: string | null): boolean | undefined {
-  if (!isNonEmptyString(value)) {
-    return undefined;
-  }
+  if (!isNonEmptyString(value)) return undefined;
   const v = value.trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes" || v === "on") {
-    return true;
-  }
-  if (v === "0" || v === "false" || v === "no" || v === "off") {
-    return false;
-  }
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
   return undefined;
 }
 
 function splitCsv(value: string | null, maxItems: number): string[] | undefined {
-  if (!isNonEmptyString(value)) {
-    return undefined;
-  }
+  if (!isNonEmptyString(value)) return undefined;
   const parts = value
     .split(",")
     .map((x) => x.trim())
     .filter((x) => x.length > 0)
     .slice(0, maxItems);
 
-  if (parts.length === 0) {
-    return undefined;
-  }
-  return parts;
+  return parts.length > 0 ? parts : undefined;
 }
 
 function sanitizeString(value: unknown, maxLen: number): string | null {
-  if (!isNonEmptyString(value)) {
-    return null;
-  }
+  if (!isNonEmptyString(value)) return null;
   return value.trim().slice(0, maxLen);
 }
 
@@ -92,14 +71,10 @@ function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
   if (isNonEmptyString(xff)) {
     const first = xff.split(",")[0]?.trim();
-    if (isNonEmptyString(first)) {
-      return first;
-    }
+    if (isNonEmptyString(first)) return first;
   }
   const xRealIp = request.headers.get("x-real-ip");
-  if (isNonEmptyString(xRealIp)) {
-    return xRealIp.trim();
-  }
+  if (isNonEmptyString(xRealIp)) return xRealIp.trim();
   return "unknown";
 }
 
@@ -146,28 +121,35 @@ function allowRequest(ip: string): { allowed: boolean; retryAfterSeconds?: numbe
   return { allowed: true };
 }
 
-function getSupabaseConfig(): { url: string; key: string; table: string } | null {
+function getSupabaseConfig(): { url: string; key: string; table: string; keyType: "anon" | "service" } | null {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  const anonKey =
     process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
     "";
+
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
   const table = isNonEmptyString(process.env.SUPABASE_BLOGS_TABLE)
     ? String(process.env.SUPABASE_BLOGS_TABLE).trim()
     : "blogs";
 
-  if (!isNonEmptyString(url) || !isNonEmptyString(key)) {
-    return null;
+  if (!isNonEmptyString(url)) return null;
+
+  if (isNonEmptyString(anonKey)) {
+    return { url: String(url).trim().replace(/\/$/, ""), key: String(anonKey).trim(), table, keyType: "anon" };
   }
 
-  return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), table };
+  if (isNonEmptyString(serviceKey)) {
+    return { url: String(url).trim().replace(/\/$/, ""), key: String(serviceKey).trim(), table, keyType: "service" };
+  }
+
+  return null;
 }
 
 function buildPostgrestUrl(args: {
@@ -176,7 +158,6 @@ function buildPostgrestUrl(args: {
   select: string;
   filters: Array<{ key: string; value: string }>;
   order?: string;
-  range?: { from: number; to: number };
 }): URL {
   const url = new URL(`${args.baseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
   url.searchParams.set("select", args.select);
@@ -189,10 +170,6 @@ function buildPostgrestUrl(args: {
     url.searchParams.set("order", args.order);
   }
 
-  if (args.range) {
-    url.searchParams.set("_range", `${args.range.from}-${args.range.to}`);
-  }
-
   return url;
 }
 
@@ -200,9 +177,7 @@ function normalizeBlogRow(row: Record<string, unknown>): BlogItem | null {
   const idRaw = row.id ?? row.blog_id ?? row.uuid;
   const slugRaw = row.slug ?? row.blog_slug;
 
-  if (!isNonEmptyString(idRaw) || !isNonEmptyString(slugRaw)) {
-    return null;
-  }
+  if (!isNonEmptyString(idRaw) || !isNonEmptyString(slugRaw)) return null;
 
   const tagsValue = row.tags ?? row.tag_list ?? null;
 
@@ -262,46 +237,40 @@ function normalizeBlogRow(row: Record<string, unknown>): BlogItem | null {
   return item;
 }
 
+function sanitizeTagForCs(tag: string): string {
+  return tag.trim().replaceAll("{", "").replaceAll("}", "").replaceAll(",", " ").slice(0, 48);
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
   const rate = allowRequest(ip);
 
   if (!rate.allowed) {
     const retryAfter = rate.retryAfterSeconds ?? 60;
-    return new NextResponse(
-      JSON.stringify({ ok: false, error: "Too many requests. Please slow down." }),
-      {
-        status: 429,
-        headers: {
-          "Content-Type": "application/json",
-          "Retry-After": String(retryAfter),
-        },
+    return new NextResponse(JSON.stringify({ ok: false, error: "Too many requests. Please slow down." }), {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(retryAfter),
       },
-    );
+    });
   }
 
   const cfg = getSupabaseConfig();
   if (!cfg) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: "Missing Supabase configuration. Set SUPABASE_URL and a key (SERVICE_ROLE or ANON).",
-      },
+      { ok: false, error: "Missing Supabase configuration. Set SUPABASE_URL and an ANON key (preferred)." },
       { status: 500 },
     );
   }
 
+  const warnings: string[] = [];
+  if (cfg.keyType === "service") {
+    warnings.push("Using SERVICE_ROLE key for read endpoint. Prefer SUPABASE_ANON_KEY for public routes.");
+  }
+
   const url = new URL(request.url);
 
-  // Supported query params:
-  // - id: exact id
-  // - slug: exact slug
-  // - published: true/false (defaults to true)
-  // - featured: true/false
-  // - category: exact category
-  // - q: search text (title/summary/excerpt/content)
-  // - tags: csv list (best-effort contains match)
-  // - limit, offset
   const id = url.searchParams.get("id");
   const slug = url.searchParams.get("slug");
   const publishedParam = url.searchParams.get("published");
@@ -317,16 +286,11 @@ export async function GET(request: Request): Promise<Response> {
   const featured = toBool(featuredParam);
 
   const filters: Array<{ key: string; value: string }> = [];
+  const orClauses: string[] = [];
 
-  if (isNonEmptyString(id)) {
-    filters.push({ key: "id", value: `eq.${id.trim()}` });
-  }
+  if (isNonEmptyString(id)) filters.push({ key: "id", value: `eq.${id.trim()}` });
+  if (isNonEmptyString(slug)) filters.push({ key: "slug", value: `eq.${slug.trim()}` });
 
-  if (isNonEmptyString(slug)) {
-    filters.push({ key: "slug", value: `eq.${slug.trim()}` });
-  }
-
-  // Default: only published.
   if (published === undefined) {
     filters.push({ key: "is_published", value: "eq.true" });
   } else {
@@ -345,25 +309,27 @@ export async function GET(request: Request): Promise<Response> {
   if (isNonEmptyString(q)) {
     const query = q.trim().slice(0, 120).replaceAll(",", " ");
     const pattern = `%${query}%`;
-
-    filters.push({
-      key: "or",
-      value: `(title.ilike.${pattern},summary.ilike.${pattern},excerpt.ilike.${pattern},content.ilike.${pattern})`,
-    });
+    orClauses.push(
+      `title.ilike.${pattern}`,
+      `summary.ilike.${pattern}`,
+      `excerpt.ilike.${pattern}`,
+      `content.ilike.${pattern}`,
+    );
   }
 
   // Best-effort tags filter (schema-dependent).
   if (tags && tags.length > 0) {
-    const tagFilters = tags.map((t) => `tags.cs.{${t.replaceAll("}", "").replaceAll("{", "")}}`);
-    const tagTextFilters = tags.map((t) => `tags_text.ilike.%${t}%`);
-
-    filters.push({
-      key: "or",
-      value: `(${[...tagFilters, ...tagTextFilters].join(",")})`,
-    });
+    const cleaned = tags.map(sanitizeTagForCs).filter((t) => t.length > 0);
+    for (const t of cleaned) {
+      orClauses.push(`tags.cs.{${t}}`);
+      orClauses.push(`tags_text.ilike.%${t}%`);
+    }
   }
 
-  // Prefer newest published content.
+  if (orClauses.length > 0) {
+    filters.push({ key: "or", value: `(${orClauses.join(",")})` });
+  }
+
   const order = "published_at.desc,order_index.asc,updated_at.desc,created_at.desc";
 
   const rangeFrom = offset;
@@ -375,7 +341,6 @@ export async function GET(request: Request): Promise<Response> {
     select: "*",
     filters,
     order,
-    range: { from: rangeFrom, to: rangeTo },
   });
 
   try {
@@ -394,46 +359,32 @@ export async function GET(request: Request): Promise<Response> {
     if (!res.ok) {
       const text = await res.text();
       return NextResponse.json(
-        {
-          ok: false,
-          error: "Failed to fetch blogs.",
-          details: text.slice(0, 2000),
-        },
+        { ok: false, error: "Failed to fetch blogs.", details: text.slice(0, 2000) },
         { status: 502 },
       );
     }
 
     const rows = (await res.json()) as Array<Record<string, unknown>>;
     const contentRange = res.headers.get("content-range");
+
     const total = (() => {
-      if (!isNonEmptyString(contentRange)) {
-        return null;
-      }
+      if (!isNonEmptyString(contentRange)) return null;
       const parts = contentRange.split("/");
-      if (parts.length !== 2) {
-        return null;
-      }
+      if (parts.length !== 2) return null;
       const totalStr = parts[1]?.trim();
-      if (!isNonEmptyString(totalStr) || totalStr === "*") {
-        return null;
-      }
+      if (!isNonEmptyString(totalStr) || totalStr === "*") return null;
       const n = Number.parseInt(totalStr, 10);
       return Number.isNaN(n) ? null : n;
     })();
 
-    const items = rows
-      .map((r) => normalizeBlogRow(r))
-      .filter((x): x is BlogItem => x !== null);
+    const items = rows.map((r) => normalizeBlogRow(r)).filter((x): x is BlogItem => x !== null);
 
     return NextResponse.json(
       {
         ok: true,
         items,
-        page: {
-          limit,
-          offset,
-          total,
-        },
+        page: { limit, offset, total },
+        warnings,
       },
       {
         status: 200,
@@ -445,19 +396,12 @@ export async function GET(request: Request): Promise<Response> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error.";
     return NextResponse.json(
-      {
-        ok: false,
-        error: "Unexpected server error.",
-        details: msg.slice(0, 2000),
-      },
+      { ok: false, error: "Unexpected server error.", details: msg.slice(0, 2000) },
       { status: 500 },
     );
   }
 }
 
 export async function POST(): Promise<Response> {
-  return NextResponse.json(
-    { ok: false, error: "Method not allowed. Use GET." },
-    { status: 405 },
-  );
+  return NextResponse.json({ ok: false, error: "Method not allowed. Use GET." }, { status: 405 });
 }

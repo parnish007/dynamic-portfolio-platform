@@ -1,9 +1,9 @@
-// app/api/settings/route.ts
+// app/api/chatbot/settings/route.ts
+
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-type SettingsScope = "public" | "admin";
 type SettingsSource = "env";
 
 type PublicSettings = {
@@ -39,6 +39,7 @@ type AdminSettings = {
   };
   ai: {
     enabled: boolean;
+    providerConfigured: boolean;
     model: string | null;
   };
   analytics: {
@@ -50,6 +51,10 @@ type AdminSettings = {
   };
 };
 
+function json(status: number, body: unknown) {
+  return NextResponse.json(body, { status });
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -57,23 +62,19 @@ function isNonEmptyString(value: unknown): value is string {
 function normalizeUrl(value: string): string {
   try {
     const u = new URL(value);
-    return u.toString().replace(/\/$/, "");
+    return u.toString().replace(/\/+$/, "");
   } catch {
-    return value.trim().replace(/\/$/, "");
+    return value.trim().replace(/\/+$/, "");
   }
 }
 
 function envFlag(value: string | undefined, fallback: boolean): boolean {
-  if (!isNonEmptyString(value)) {
-    return fallback;
-  }
+  if (!isNonEmptyString(value)) return fallback;
+
   const v = value.trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes" || v === "on") {
-    return true;
-  }
-  if (v === "0" || v === "false" || v === "no" || v === "off") {
-    return false;
-  }
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+
   return fallback;
 }
 
@@ -81,30 +82,32 @@ function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
   if (isNonEmptyString(xff)) {
     const first = xff.split(",")[0]?.trim();
-    if (isNonEmptyString(first)) {
-      return first;
-    }
+    if (isNonEmptyString(first)) return first;
   }
+
   const xRealIp = request.headers.get("x-real-ip");
-  if (isNonEmptyString(xRealIp)) {
-    return xRealIp.trim();
-  }
+  if (isNonEmptyString(xRealIp)) return xRealIp.trim();
+
   return "unknown";
 }
 
 /**
  * Optional auth gate for admin settings.
  * If ADMIN_SETTINGS_SECRET is set, client must send header: x-admin-secret: <value>
+ *
+ * IMPORTANT:
+ * - If secret is NOT set, admin settings are still accessible (local/dev),
+ *   but you should enable secret in production.
  */
 function isAdminAuthorized(request: Request): boolean {
   const secret = process.env.ADMIN_SETTINGS_SECRET;
   if (!isNonEmptyString(secret)) {
-    return false;
+    return true;
   }
+
   const header = request.headers.get("x-admin-secret");
-  if (!isNonEmptyString(header)) {
-    return false;
-  }
+  if (!isNonEmptyString(header)) return false;
+
   return header.trim() === secret.trim();
 }
 
@@ -156,9 +159,9 @@ function buildPublicSettings(): PublicSettings {
     ? String(process.env.NEXT_PUBLIC_APP_NAME).trim()
     : "Portfolio";
 
-  const appUrlRaw = isNonEmptyString(process.env.NEXT_PUBLIC_APP_URL)
-    ? String(process.env.NEXT_PUBLIC_APP_URL).trim()
-    : "";
+  const appUrlRaw =
+    (isNonEmptyString(process.env.NEXT_PUBLIC_SITE_URL) ? String(process.env.NEXT_PUBLIC_SITE_URL).trim() : "") ||
+    (isNonEmptyString(process.env.NEXT_PUBLIC_APP_URL) ? String(process.env.NEXT_PUBLIC_APP_URL).trim() : "");
 
   const appUrl = isNonEmptyString(appUrlRaw) ? normalizeUrl(appUrlRaw) : "";
 
@@ -215,9 +218,21 @@ function buildAdminSettings(): AdminSettings {
     envFlag(process.env.ADMIN_AUTH_ENABLED, true) ||
     isNonEmptyString(process.env.ADMIN_PASSWORD_HASH);
 
-  const model = isNonEmptyString(process.env.OPENAI_MODEL) ? String(process.env.OPENAI_MODEL) : null;
+  /**
+   * Align AI env with the rest of your codebase:
+   * - app/api/ai/* uses AI_API_KEY + AI_API_BASE_URL
+   */
+  const aiKey = process.env.AI_API_KEY;
+  const aiBaseUrl = process.env.AI_API_BASE_URL;
 
-  const aiEnabled = envFlag(process.env.AI_ENABLED, true) && isNonEmptyString(process.env.OPENAI_API_KEY);
+  const providerConfigured = isNonEmptyString(aiKey) && isNonEmptyString(aiBaseUrl);
+
+  const aiEnabled = envFlag(process.env.AI_ENABLED, true) && providerConfigured;
+
+  const model =
+    isNonEmptyString(process.env.AI_MODEL)
+      ? String(process.env.AI_MODEL).trim()
+      : null;
 
   const analyticsEnabled = envFlag(process.env.ANALYTICS_ENABLED, true);
 
@@ -233,6 +248,7 @@ function buildAdminSettings(): AdminSettings {
     },
     ai: {
       enabled: aiEnabled,
+      providerConfigured,
       model,
     },
     analytics: {
@@ -252,10 +268,7 @@ export async function GET(request: Request): Promise<Response> {
   if (!rate.allowed) {
     const retryAfter = rate.retryAfterSeconds ?? 60;
     return new NextResponse(
-      JSON.stringify({
-        ok: false,
-        error: "Too many requests. Please slow down.",
-      }),
+      JSON.stringify({ ok: false, error: "Too many requests. Please slow down." }),
       {
         status: 429,
         headers: {
@@ -271,22 +284,20 @@ export async function GET(request: Request): Promise<Response> {
 
   if (wantsAdmin) {
     if (!isAdminAuthorized(request)) {
-      return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+      return json(401, { ok: false, error: "Unauthorized." });
     }
+
     const admin = buildAdminSettings();
-    return NextResponse.json({ ok: true, settings: admin }, { status: 200 });
+    return json(200, { ok: true, settings: admin });
   }
 
   const pub = buildPublicSettings();
-  return NextResponse.json({ ok: true, settings: pub }, { status: 200 });
+  return json(200, { ok: true, settings: pub });
 }
 
 export async function POST(): Promise<Response> {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "Method not allowed. Settings are read-only via this endpoint.",
-    },
-    { status: 405 },
-  );
+  return json(405, {
+    ok: false,
+    error: "Method not allowed. Settings are read-only via this endpoint.",
+  });
 }

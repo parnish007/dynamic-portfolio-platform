@@ -92,7 +92,7 @@ function allowRequest(args: {
  * - If ADMIN_API_SECRET is set, require:
  *   x-admin-api-secret: <secret>
  *
- * (Later you can replace this with your admin session auth.)
+ * (Later replace with real admin session auth.)
  */
 function isAdminAuthorized(request: Request): boolean {
   const secret = process.env.ADMIN_API_SECRET;
@@ -101,48 +101,46 @@ function isAdminAuthorized(request: Request): boolean {
     return true;
   }
   const header = request.headers.get("x-admin-api-secret");
-  if (!isNonEmptyString(header)) {
-    return false;
-  }
+  if (!isNonEmptyString(header)) return false;
   return header.trim() === secret.trim();
 }
 
-function getSupabaseConfig(): { url: string; key: string; table: string } | null {
+function getSupabaseBaseUrl(): string | null {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  const key =
-    // Updating settings is admin-only; service role is strongly recommended.
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    "";
+  if (!isNonEmptyString(url)) return null;
+  return String(url).trim().replace(/\/$/, "");
+}
 
-  const table = isNonEmptyString(process.env.SUPABASE_SETTINGS_TABLE)
+function getAnonKey(): string | null {
+  const key = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+  if (!isNonEmptyString(key)) return null;
+  return String(key).trim();
+}
+
+function getServiceRoleKey(): string | null {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  if (!isNonEmptyString(key)) return null;
+  return String(key).trim();
+}
+
+function getSettingsTable(): string {
+  return isNonEmptyString(process.env.SUPABASE_SETTINGS_TABLE)
     ? String(process.env.SUPABASE_SETTINGS_TABLE).trim()
     : "settings";
-
-  if (!isNonEmptyString(url) || !isNonEmptyString(key)) {
-    return null;
-  }
-
-  return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), table };
 }
 
 function jsonErr(error: string, status: number, details?: string): Response {
   const payload: ApiErr = { ok: false, error };
-  if (isNonEmptyString(details)) {
-    payload.details = details.slice(0, 2000);
-  }
+  if (isNonEmptyString(details)) payload.details = details.slice(0, 2000);
   return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 function envFallbackSettings(): Record<string, unknown> {
-  // Fallback only; real settings should come from DB.
-  // Still data-driven via env, not hardcoded content.
   const siteUrl =
     process.env.NEXT_PUBLIC_SITE_URL ??
     process.env.SITE_URL ??
@@ -171,6 +169,34 @@ function envFallbackSettings(): Record<string, unknown> {
   };
 }
 
+function getSettingsRowKey(): { keyColumn: string; keyValue: string; conflict: string } {
+  const keyColumn = isNonEmptyString(process.env.SUPABASE_SETTINGS_KEY_COLUMN)
+    ? String(process.env.SUPABASE_SETTINGS_KEY_COLUMN).trim()
+    : "key";
+
+  const keyValue = isNonEmptyString(process.env.SUPABASE_SETTINGS_KEY_VALUE)
+    ? String(process.env.SUPABASE_SETTINGS_KEY_VALUE).trim()
+    : "global";
+
+  const conflict = isNonEmptyString(process.env.SUPABASE_SETTINGS_CONFLICT_TARGET)
+    ? String(process.env.SUPABASE_SETTINGS_CONFLICT_TARGET).trim()
+    : keyColumn;
+
+  return { keyColumn, keyValue, conflict };
+}
+
+function extractSettingsObject(row: Record<string, unknown>): Record<string, unknown> | null {
+  const maybe = row.data ?? row.settings ?? row.value;
+  if (isPlainObject(maybe)) return maybe as Record<string, unknown>;
+  return null;
+}
+
+function extractUpdatedAt(row: Record<string, unknown>): string | null {
+  if (typeof row.updated_at === "string") return row.updated_at;
+  if (typeof row.updatedAt === "string") return row.updatedAt;
+  return null;
+}
+
 async function postgrestSelectOne(args: {
   supabaseUrl: string;
   supabaseKey: string;
@@ -180,9 +206,12 @@ async function postgrestSelectOne(args: {
 }): Promise<Record<string, unknown> | null> {
   const url = new URL(`${args.supabaseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
   url.searchParams.set("select", args.select);
+
+  // append so repeated keys don't overwrite
   for (const f of args.filters) {
-    url.searchParams.set(f.key, f.value);
+    url.searchParams.append(f.key, f.value);
   }
+
   url.searchParams.set("limit", "1");
 
   const res = await fetch(url.toString(), {
@@ -201,14 +230,10 @@ async function postgrestSelectOne(args: {
   }
 
   const json = (await res.json()) as unknown;
-  if (!Array.isArray(json) || json.length === 0) {
-    return null;
-  }
+  if (!Array.isArray(json) || json.length === 0) return null;
 
   const first = json[0];
-  if (!isPlainObject(first)) {
-    return null;
-  }
+  if (!isPlainObject(first)) return null;
 
   return first as Record<string, unknown>;
 }
@@ -223,6 +248,14 @@ async function postgrestUpsertOne(args: {
 }): Promise<Record<string, unknown> | null> {
   const url = new URL(`${args.supabaseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
 
+  // Ensure upsert conflict target is applied
+  if (isNonEmptyString(args.conflictTarget)) {
+    url.searchParams.set("on_conflict", args.conflictTarget);
+  }
+
+  // Ensure we actually get representation back
+  url.searchParams.set("select", args.select);
+
   const res = await fetch(url.toString(), {
     method: "POST",
     headers: {
@@ -230,10 +263,9 @@ async function postgrestUpsertOne(args: {
       Authorization: `Bearer ${args.supabaseKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
-      Prefer: `resolution=merge-duplicates,return=representation`,
+      Prefer: "resolution=merge-duplicates,return=representation",
       "X-Client-Info": "portfolio-settings-api",
     },
-    // PostgREST upsert: pass object or array. We use array for consistency.
     body: JSON.stringify([args.payload]),
     cache: "no-store",
   });
@@ -244,44 +276,38 @@ async function postgrestUpsertOne(args: {
   }
 
   const json = (await res.json()) as unknown;
-  if (!Array.isArray(json) || json.length === 0) {
-    return null;
-  }
+  if (!Array.isArray(json) || json.length === 0) return null;
 
   const first = json[0];
-  if (!isPlainObject(first)) {
-    return null;
-  }
+  if (!isPlainObject(first)) return null;
 
   return first as Record<string, unknown>;
 }
 
-function getSettingsRowKey(): { keyColumn: string; keyValue: string; conflict: string } {
-  // A single-row settings table pattern:
-  // columns: key (text primary key), data (jsonb), updated_at (timestamptz)
-  // default key value: "global"
-  const keyColumn = isNonEmptyString(process.env.SUPABASE_SETTINGS_KEY_COLUMN)
-    ? String(process.env.SUPABASE_SETTINGS_KEY_COLUMN).trim()
-    : "key";
+function deepMergeObjects(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...a };
 
-  const keyValue = isNonEmptyString(process.env.SUPABASE_SETTINGS_KEY_VALUE)
-    ? String(process.env.SUPABASE_SETTINGS_KEY_VALUE).trim()
-    : "global";
+  for (const [k, v] of Object.entries(b)) {
+    const aVal = out[k];
 
-  // PostgREST upsert conflict target
-  const conflict = isNonEmptyString(process.env.SUPABASE_SETTINGS_CONFLICT_TARGET)
-    ? String(process.env.SUPABASE_SETTINGS_CONFLICT_TARGET).trim()
-    : keyColumn;
+    if (isPlainObject(aVal) && isPlainObject(v)) {
+      out[k] = deepMergeObjects(aVal as Record<string, unknown>, v as Record<string, unknown>);
+      continue;
+    }
 
-  return { keyColumn, keyValue, conflict };
+    // Arrays and primitives replace entirely (predictable + safe)
+    out[k] = v;
+  }
+
+  return out;
 }
 
 /**
  * GET /api/settings
  *
- * Returns global settings (admin-controlled).
- * This is safe to consume from public UI if RLS restricts sensitive fields.
- * If you need separate public settings, you can add a view/table later.
+ * Public-safe: uses ANON key only.
+ * If your settings table contains sensitive values, enforce RLS to limit what anon can read,
+ * or split into public_settings vs admin_settings.
  */
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -299,9 +325,11 @@ export async function GET(request: Request): Promise<Response> {
     });
   }
 
-  const cfg = getSupabaseConfig();
-  if (!cfg) {
-    // Still return env-based fallback rather than erroring, to keep app functional.
+  const supabaseUrl = getSupabaseBaseUrl();
+  const anonKey = getAnonKey();
+  const table = getSettingsTable();
+
+  if (!supabaseUrl || !anonKey) {
     const payload: ApiOkGet = {
       ok: true,
       settings: envFallbackSettings(),
@@ -315,9 +343,9 @@ export async function GET(request: Request): Promise<Response> {
 
   try {
     const row = await postgrestSelectOne({
-      supabaseUrl: cfg.url,
-      supabaseKey: cfg.key,
-      table: cfg.table,
+      supabaseUrl,
+      supabaseKey: anonKey,
+      table,
       select: "*",
       filters: [{ key: keyColumn, value: `eq.${keyValue}` }],
     });
@@ -332,20 +360,12 @@ export async function GET(request: Request): Promise<Response> {
       return NextResponse.json(payload, { status: 200, headers: { "Cache-Control": "no-store" } });
     }
 
-    const data = row.data;
-    const settings = isPlainObject(data) ? (data as Record<string, unknown>) : envFallbackSettings();
-
-    const updatedAt =
-      typeof row.updated_at === "string"
-        ? row.updated_at
-        : typeof row.updatedAt === "string"
-          ? row.updatedAt
-          : null;
+    const settings = extractSettingsObject(row) ?? envFallbackSettings();
 
     const payload: ApiOkGet = {
       ok: true,
       settings,
-      updatedAt,
+      updatedAt: extractUpdatedAt(row),
       source: "supabase",
     };
 
@@ -359,9 +379,9 @@ export async function GET(request: Request): Promise<Response> {
 /**
  * PATCH /api/settings
  *
- * Admin-only: merges partial settings into the stored JSON.
+ * Admin-only: uses SERVICE ROLE key only.
  * Body:
- * - patch: object (required)  // deep merge (object-only)
+ * - patch: object (required)
  */
 export async function PATCH(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -383,8 +403,11 @@ export async function PATCH(request: Request): Promise<Response> {
     return jsonErr("Unauthorized.", 401);
   }
 
-  const cfg = getSupabaseConfig();
-  if (!cfg) {
+  const supabaseUrl = getSupabaseBaseUrl();
+  const serviceRoleKey = getServiceRoleKey();
+  const table = getSettingsTable();
+
+  if (!supabaseUrl || !serviceRoleKey) {
     return jsonErr(
       "Missing Supabase configuration.",
       500,
@@ -414,39 +437,18 @@ export async function PATCH(request: Request): Promise<Response> {
   let current: Record<string, unknown> = {};
   try {
     const row = await postgrestSelectOne({
-      supabaseUrl: cfg.url,
-      supabaseKey: cfg.key,
-      table: cfg.table,
+      supabaseUrl,
+      supabaseKey: serviceRoleKey,
+      table,
       select: "*",
       filters: [{ key: keyColumn, value: `eq.${keyValue}` }],
     });
 
-    const data = row?.data;
-    if (isPlainObject(data)) {
-      current = data as Record<string, unknown>;
-    }
+    const fromRow = row ? extractSettingsObject(row) : null;
+    if (fromRow) current = fromRow;
   } catch {
-    // If select fails, we still attempt upsert with patch only.
     current = {};
   }
-
-  const deepMergeObjects = (a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> => {
-    const out: Record<string, unknown> = { ...a };
-
-    for (const [k, v] of Object.entries(b)) {
-      const aVal = out[k];
-
-      if (isPlainObject(aVal) && isPlainObject(v)) {
-        out[k] = deepMergeObjects(aVal as Record<string, unknown>, v as Record<string, unknown>);
-        continue;
-      }
-
-      // Arrays and primitives replace entirely (predictable + safe)
-      out[k] = v;
-    }
-
-    return out;
-  };
 
   const merged = deepMergeObjects(current, patch as Record<string, unknown>);
 
@@ -458,23 +460,20 @@ export async function PATCH(request: Request): Promise<Response> {
 
   try {
     const saved = await postgrestUpsertOne({
-      supabaseUrl: cfg.url,
-      supabaseKey: cfg.key,
-      table: cfg.table,
+      supabaseUrl,
+      supabaseKey: serviceRoleKey,
+      table,
       payload: payloadRow,
       conflictTarget: conflict,
       select: "*",
     });
 
-    const updatedAt =
-      saved && typeof saved.updated_at === "string"
-        ? saved.updated_at
-        : payloadRow.updated_at;
+    const updatedAt = saved ? extractUpdatedAt(saved) : null;
 
     const response: ApiOkPatch = {
       ok: true,
       settings: merged,
-      updatedAt: String(updatedAt),
+      updatedAt: isNonEmptyString(updatedAt) ? updatedAt : String(payloadRow.updated_at),
     };
 
     return NextResponse.json(response, { status: 200, headers: { "Cache-Control": "no-store" } });

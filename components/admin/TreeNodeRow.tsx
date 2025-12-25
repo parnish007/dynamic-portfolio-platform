@@ -1,7 +1,9 @@
 // components/admin/TreeNodeRow.tsx
 
+"use client";
+
 import React from "react";
-import { SectionNode } from "../../types/section";
+import type { SectionNode } from "../../types/section";
 
 type TreeNodeRowProps = {
   node: SectionNode;
@@ -9,6 +11,21 @@ type TreeNodeRowProps = {
   selectedNodeId: string | null;
   onSelectNode: (node: SectionNode) => void;
 };
+
+function getNodeIcon(type: SectionNode["type"]) {
+  switch (type) {
+    case "folder":
+      return "📁";
+    case "section":
+      return "📄";
+    case "project":
+      return "🧩";
+    case "blog":
+      return "📝";
+    default:
+      return "📄";
+  }
+}
 
 const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
   node,
@@ -21,20 +38,40 @@ const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
   return (
     <div>
       <div
-        className={`flex items-center cursor-pointer px-2 py-1 rounded transition ${
-          isSelected ? "bg-blue-100 font-semibold" : "hover:bg-gray-100"
-        }`}
-        style={{ paddingLeft: `${level * 16}px` }}
+        role="button"
+        aria-selected={isSelected}
         onClick={() => onSelectNode(node)}
+        className={[
+          "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition",
+          "cursor-pointer select-none",
+          isSelected
+            ? "bg-zinc-800 text-zinc-100"
+            : "text-zinc-300 hover:bg-zinc-900",
+        ].join(" ")}
+        style={{ paddingLeft: `${level * 14 + 8}px` }}
       >
-        <span className="mr-2">
-          {node.type === "section" ? "📁" : node.type === "project" ? "📄" : "📝"}
+        {/* Hierarchy guide */}
+        {level > 0 && (
+          <span
+            aria-hidden
+            className="absolute left-0 h-full w-px bg-zinc-800"
+            style={{ marginLeft: `${level * 14}px` }}
+          />
+        )}
+
+        {/* Icon */}
+        <span className="shrink-0 opacity-80">
+          {getNodeIcon(node.type)}
         </span>
-        <span>{node.title}</span>
+
+        {/* Title */}
+        <span className="truncate">
+          {node.title || <span className="italic text-zinc-500">(untitled)</span>}
+        </span>
       </div>
 
-      {/* Render children recursively if any */}
-      {node.children &&
+      {/* Children */}
+      {Array.isArray(node.children) &&
         node.children.map((child) => (
           <TreeNodeRow
             key={child.id}

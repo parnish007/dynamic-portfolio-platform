@@ -34,20 +34,15 @@ type BlogDraftResponse = {
 
 function jsonError(status: number, message: string) {
   return NextResponse.json(
-    { message },
+    { ok: false, error: message, message },
     { status }
   );
 }
 
 function safeTrim(v: unknown, maxLen: number): string {
   const s = typeof v === "string" ? v.trim() : "";
-  if (!s) {
-    return "";
-  }
-  if (s.length > maxLen) {
-    return s.slice(0, maxLen);
-  }
-
+  if (!s) return "";
+  if (s.length > maxLen) return s.slice(0, maxLen);
   return s;
 }
 
@@ -62,19 +57,15 @@ function toSlug(input: string): string {
 }
 
 function asStringArray(value: unknown, maxItems: number, maxLen: number): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
+  if (!Array.isArray(value)) return [];
 
   const out: string[] = [];
+
   for (const item of value) {
-    if (out.length >= maxItems) {
-      break;
-    }
+    if (out.length >= maxItems) break;
+
     const s = safeTrim(item, maxLen);
-    if (s) {
-      out.push(s);
-    }
+    if (s) out.push(s);
   }
 
   return out;
@@ -84,6 +75,7 @@ function normalizeTone(v: unknown): BlogDraftRequest["tone"] {
   if (v === "neutral" || v === "casual" || v === "professional" || v === "technical") {
     return v;
   }
+
   return "professional";
 }
 
@@ -102,22 +94,20 @@ function buildDraftPrompt(body: BlogDraftRequest) {
   const maxWords = body.constraints?.maxWords ?? 1200;
   const includeToc = body.constraints?.includeToc ?? true;
 
-  const sectionsText = outline.length > 0
-    ? outline.map((s, i) => `${i + 1}. ${s}`).join("\n")
-    : "Use a logical structure with headings and subheadings.";
+  const sectionsText =
+    outline.length > 0
+      ? outline.map((s, i) => `${i + 1}. ${s}`).join("\n")
+      : "Use a logical structure with headings and subheadings.";
 
-  const keywordLine = keywords.length > 0
-    ? `SEO keywords to naturally include (no stuffing): ${keywords.join(", ")}`
-    : "SEO keywords: None provided.";
+  const keywordLine =
+    keywords.length > 0
+      ? `SEO keywords to naturally include (no stuffing): ${keywords.join(", ")}`
+      : "SEO keywords: None provided.";
 
   const tocLine = includeToc
     ? "Include a short Table of Contents (markdown links) near the top."
     : "Do not include a Table of Contents.";
 
-  /**
-   * Output must be STRICT JSON so we can parse reliably.
-   * No hardcoded portfolio content: generate only from request.
-   */
   const prompt = `
 You are an expert technical writer and SEO editor.
 
@@ -166,10 +156,6 @@ async function callLLM(prompt: string): Promise<string> {
   const apiKey = process.env.AI_API_KEY;
 
   if (!apiKey) {
-    /**
-     * Safe-by-default: if AI key isn't set, return a deterministic fallback
-     * that still follows the contract (no hardcoded portfolio content).
-     */
     const fallback = {
       title: "Draft unavailable (AI not configured)",
       excerpt: "AI generation is currently unavailable. Configure AI_API_KEY to enable drafts.",
@@ -193,14 +179,6 @@ AI generation is currently unavailable because **AI_API_KEY** is not configured.
     return JSON.stringify(fallback);
   }
 
-  /**
-   * Provider-agnostic call using fetch.
-   * You will plug your preferred LLM endpoint later without changing callers.
-   *
-   * For now, we expect:
-   * - AI_API_BASE_URL (optional)
-   * - If not present, we return a safe fallback message.
-   */
   const baseUrl = process.env.AI_API_BASE_URL?.trim();
 
   if (!baseUrl) {
@@ -226,13 +204,6 @@ AI generation cannot run because **AI_API_BASE_URL** is not configured.
     return JSON.stringify(fallback);
   }
 
-  /**
-   * Generic JSON API contract:
-   * POST { prompt: string }
-   * -> { text: string }
-   *
-   * Your future ai.service.ts can standardize this provider layer.
-   */
   const res = await fetch(baseUrl, {
     method: "POST",
     headers: {
@@ -261,14 +232,9 @@ function tryParseJson(text: string): any | null {
   try {
     return JSON.parse(text);
   } catch {
-    /**
-     * Some providers may wrap JSON in markdown fences.
-     * Try to extract a JSON object substring.
-     */
     const match = text.match(/\{[\s\S]*\}/);
-    if (!match) {
-      return null;
-    }
+    if (!match) return null;
+
     try {
       return JSON.parse(match[0]);
     } catch {
@@ -288,9 +254,7 @@ function normalizeResponse(raw: any, topic: string): BlogDraftResponse {
 
   const content = safeTrim(raw?.content, 100_000);
 
-  if (!content) {
-    warnings.push("AI returned empty content. Using minimal fallback.");
-  }
+  if (!content) warnings.push("AI returned empty content. Using minimal fallback.");
 
   const slug = toSlug(title) || toSlug(topic) || "draft";
 
@@ -311,15 +275,8 @@ function normalizeResponse(raw: any, topic: string): BlogDraftResponse {
 export async function POST(req: Request) {
   const contentType = req.headers.get("content-type") || "";
 
-  /**
-   * Accept JSON only (admin UI can send JSON).
-   * If you want multipart later, add a new endpoint or extend safely.
-   */
   if (!contentType.includes("application/json")) {
-    return jsonError(
-      415,
-      "Unsupported content type. Use application/json."
-    );
+    return jsonError(415, "Unsupported content type. Use application/json.");
   }
 
   let body: BlogDraftRequest | null = null;
@@ -327,19 +284,13 @@ export async function POST(req: Request) {
   try {
     body = (await req.json()) as BlogDraftRequest;
   } catch {
-    return jsonError(
-      400,
-      "Invalid JSON body."
-    );
+    return jsonError(400, "Invalid JSON body.");
   }
 
   const topic = safeTrim(body?.topic, 200);
 
   if (!topic) {
-    return jsonError(
-      400,
-      "Missing required field: topic"
-    );
+    return jsonError(400, "Missing required field: topic");
   }
 
   const normalized: BlogDraftRequest = {
@@ -355,9 +306,10 @@ export async function POST(req: Request) {
     },
     outline: asStringArray(body?.outline, 24, 120),
     constraints: {
-      maxWords: typeof body?.constraints?.maxWords === "number"
-        ? Math.max(200, Math.min(4000, Math.floor(body.constraints.maxWords)))
-        : 1200,
+      maxWords:
+        typeof body?.constraints?.maxWords === "number"
+          ? Math.max(200, Math.min(4000, Math.floor(body.constraints.maxWords)))
+          : 1200,
       includeToc: body?.constraints?.includeToc !== false,
       markdownOnly: body?.constraints?.markdownOnly !== false,
     },
@@ -383,27 +335,18 @@ export async function POST(req: Request) {
         warnings: ["Provider returned non-JSON output. Wrapped raw text into markdown."],
       };
 
-      return NextResponse.json(response, { status: 200 });
+      return NextResponse.json({ ok: true, ...response }, { status: 200 });
     }
 
     const response = normalizeResponse(parsed, topic);
 
-    return NextResponse.json(response, { status: 200 });
+    return NextResponse.json({ ok: true, ...response }, { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "AI draft generation failed";
-    return jsonError(
-      500,
-      message
-    );
+    return jsonError(500, message);
   }
 }
 
-/**
- * Method guard
- */
 export async function GET() {
-  return jsonError(
-    405,
-    "Method not allowed. Use POST."
-  );
+  return jsonError(405, "Method not allowed. Use POST.");
 }

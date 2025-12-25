@@ -35,7 +35,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function sanitizeFilename(name: string): string {
-  // Remove path separators and weird chars; keep simple safe set.
   const base = name.replaceAll("\\", "/").split("/").pop() ?? "file";
   const cleaned = base
     .replace(/[^\w.\-()+\s]/g, "")
@@ -48,16 +47,10 @@ function sanitizeFilename(name: string): string {
 
 function extFromName(name: string): string | null {
   const idx = name.lastIndexOf(".");
-  if (idx < 0) {
-    return null;
-  }
+  if (idx < 0) return null;
   const ext = name.slice(idx + 1).toLowerCase().trim();
-  if (!ext) {
-    return null;
-  }
-  if (!/^[a-z0-9]{1,10}$/.test(ext)) {
-    return null;
-  }
+  if (!ext) return null;
+  if (!/^[a-z0-9]{1,10}$/.test(ext)) return null;
   return ext;
 }
 
@@ -130,65 +123,69 @@ function allowUpload(ip: string): { allowed: boolean; retryAfterSeconds?: number
 }
 
 /**
- * Upload auth:
- * - This is an admin operation.
- * - If MEDIA_UPLOAD_SECRET is set, require:
- *   x-media-upload-secret: <secret>
- *
- * (Later you can replace this with your admin session auth.)
+ * Upload auth (admin-only).
+ * MUST set MEDIA_UPLOAD_SECRET in production.
  */
 function isUploadAuthorized(request: Request): boolean {
   const secret = process.env.MEDIA_UPLOAD_SECRET;
+
   if (!isNonEmptyString(secret)) {
-    // If secret isn't set, keep it open for dev convenience.
-    return true;
+    return false;
   }
+
   const header = request.headers.get("x-media-upload-secret");
   if (!isNonEmptyString(header)) {
     return false;
   }
+
   return header.trim() === secret.trim();
 }
 
-function getSupabaseConfig(): { url: string; key: string; bucket: string } | null {
+function getSupabaseConfig(): { url: string; serviceKey: string; bucket: string } | null {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  const key =
-    // For uploads, service role is recommended (or signed upload endpoint).
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
   const bucket = isNonEmptyString(process.env.SUPABASE_MEDIA_BUCKET)
     ? String(process.env.SUPABASE_MEDIA_BUCKET).trim()
     : "media";
 
-  if (!isNonEmptyString(url) || !isNonEmptyString(key)) {
+  if (!isNonEmptyString(url) || !isNonEmptyString(serviceKey)) {
     return null;
   }
 
-  return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), bucket };
+  return { url: String(url).trim().replace(/\/$/, ""), serviceKey: String(serviceKey).trim(), bucket };
 }
 
 function getPublicBaseUrl(): string | null {
-  // If you serve media via Supabase public URL:
-  // https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
-  // This function builds base; actual file URL might be null if bucket is private.
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
-  if (!isNonEmptyString(url)) {
-    return null;
-  }
+  if (!isNonEmptyString(url)) return null;
   return String(url).trim().replace(/\/$/, "");
+}
+
+function sanitizeFolder(input: string): string {
+  const raw = input.trim().replaceAll("\\", "/");
+
+  const parts = raw
+    .split("/")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .filter((p) => p !== "." && p !== "..")
+    .map((p) => p.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40))
+    .filter((p) => p.length > 0);
+
+  const normalized = parts.join("/").slice(0, 120);
+
+  return normalized.length > 0 ? normalized : "uploads";
 }
 
 function buildObjectPath(args: {
@@ -196,7 +193,7 @@ function buildObjectPath(args: {
   originalName: string | null;
   mime: string;
 }): { path: string; originalName: string | null } {
-  const folder = args.folder.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  const folder = sanitizeFolder(args.folder);
   const original = args.originalName ? sanitizeFilename(args.originalName) : null;
 
   const extFromOriginal = original ? extFromName(original) : null;
@@ -210,10 +207,7 @@ function buildObjectPath(args: {
 
   const rand = crypto.randomBytes(10).toString("hex");
 
-  const safeBaseName = original
-    ? original.replace(/\.[^.]+$/, "").slice(0, 60)
-    : "upload";
-
+  const safeBaseName = original ? original.replace(/\.[^.]+$/, "").slice(0, 60) : "upload";
   const fileName = `${safeBaseName}-${rand}.${ext}`.replace(/\s+/g, "-");
 
   const finalPath = `${folder}/${y}/${m}/${d}/${fileName}`.replace(/\/+/g, "/");
@@ -222,8 +216,6 @@ function buildObjectPath(args: {
 }
 
 async function readImageDimensions(file: File): Promise<{ width: number; height: number } | null> {
-  // Server-side Node runtime does not have easy image parsing without deps.
-  // We keep this null by default. If you later add an image-size lib, wire it here.
   void file;
   return null;
 }
@@ -238,6 +230,15 @@ function errJson(error: string, status: number, details?: string): Response {
     payload.details = details.slice(0, 2000);
   }
   return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+function shouldReturnPublicUrl(): boolean {
+  const env = process.env.MEDIA_UPLOAD_RETURN_PUBLIC_URL;
+  if (!isNonEmptyString(env)) {
+    return false;
+  }
+  const v = env.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -257,13 +258,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   if (!isUploadAuthorized(request)) {
-    return errJson("Unauthorized.", 401);
+    return errJson("Unauthorized. Set MEDIA_UPLOAD_SECRET and pass x-media-upload-secret.", 401);
   }
 
   const cfg = getSupabaseConfig();
   if (!cfg) {
     return errJson(
-      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (recommended).",
+      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
       500,
     );
   }
@@ -285,18 +286,14 @@ export async function POST(request: Request): Promise<Response> {
     return errJson("Missing form field 'file'.", 400);
   }
 
-  const folder = (form.get("folder") ?? "uploads").toString();
-  const requestedFolder = isNonEmptyString(folder) ? folder : "uploads";
+  const folderValue = form.get("folder");
+  const requestedFolder = isNonEmptyString(folderValue) ? folderValue : "uploads";
 
   const maxBytes = (() => {
     const env = process.env.MEDIA_UPLOAD_MAX_BYTES;
-    if (!isNonEmptyString(env)) {
-      return 10 * 1024 * 1024;
-    }
+    if (!isNonEmptyString(env)) return 10 * 1024 * 1024;
     const n = Number.parseInt(env, 10);
-    if (Number.isNaN(n)) {
-      return 10 * 1024 * 1024;
-    }
+    if (Number.isNaN(n)) return 10 * 1024 * 1024;
     return Math.min(50 * 1024 * 1024, Math.max(256 * 1024, n));
   })();
 
@@ -308,9 +305,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const allowList = (() => {
     const env = process.env.MEDIA_UPLOAD_ALLOWED_MIME;
-    if (!isNonEmptyString(env)) {
-      return null;
-    }
+    if (!isNonEmptyString(env)) return null;
     return env
       .split(",")
       .map((x) => x.trim().toLowerCase())
@@ -324,7 +319,6 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
 
-  // Optional meta (JSON string)
   const metaRaw = form.get("meta");
   let meta: Record<string, unknown> | null = null;
 
@@ -335,7 +329,7 @@ export async function POST(request: Request): Promise<Response> {
         meta = parsed;
       }
     } catch {
-      // ignore invalid meta
+      // ignore
     }
   }
 
@@ -354,8 +348,8 @@ export async function POST(request: Request): Promise<Response> {
 
   const bytes = new Uint8Array(arrayBuffer);
 
-  // Upload to Supabase Storage (object API)
-  // PUT /storage/v1/object/<bucket>/<path>
+  // ✅ Correct Storage upload:
+  // PUT /storage/v1/object/<bucket>/<path> with x-upsert true
   const putUrl = `${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/${path
     .split("/")
     .map((seg) => encodeURIComponent(seg))
@@ -363,14 +357,15 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const putRes = await fetch(putUrl, {
-      method: "POST",
+      method: "PUT",
       headers: {
-        Authorization: `Bearer ${cfg.key}`,
-        apikey: cfg.key,
+        Authorization: `Bearer ${cfg.serviceKey}`,
+        apikey: cfg.serviceKey,
         "Content-Type": mime,
         "x-upsert": "true",
       },
       body: bytes,
+      cache: "no-store",
     });
 
     if (!putRes.ok) {
@@ -382,12 +377,12 @@ export async function POST(request: Request): Promise<Response> {
 
     const base = getPublicBaseUrl();
     const publicUrl =
-      base === null
-        ? null
-        : `${base}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/${path
+      shouldReturnPublicUrl() && base
+        ? `${base}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/${path
             .split("/")
             .map((seg) => encodeURIComponent(seg))
-            .join("/")}`;
+            .join("/")}`
+        : null;
 
     return okJson(
       {
