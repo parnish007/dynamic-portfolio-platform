@@ -1,0 +1,202 @@
+/* C:\Users\AB\Desktop\portfolio-website\styles\components\hero.css */
+
+/* ========================================================================== */
+/* HERO COMPONENT                                                             */
+/* ========================================================================== */
+/*
+  Design goals:
+  - Works with a simple static hero OR a future 3D hero container
+  - Clean typography + CTA layout
+  - Responsive by default
+  - CSS variable friendly (theme-ready)
+  - Animation-safe (Framer Motion compatible)
+*/
+
+/* -------------------------------------------------------------------------- */
+/* Hero Wrapper                                                               */
+/* -------------------------------------------------------------------------- */
+
+.hero {
+  --hero-bg: var(--color-bg, #0b1220);
+  --hero-text: var(--color-text-inverse, #ffffff);
+  --hero-muted: rgba(255, 255, 255, 0.78);
+
+  position: relative;
+  overflow: hidden;
+
+  background: radial-gradient(
+      circle at 20% 20%,
+      rgba(59, 130, 246, 0.22),
+      transparent 55%
+    ),
+    radial-gradient(
+      circle at 80% 40%,
+      rgba(168, 85, 247, 0.18),
+      transparent 55%
+    ),
+    linear-gradient(180deg, rgba(2, 6, 23, 0.9), rgba(2, 6, 23, 1));
+
+  color: var(--hero-text);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Hero Inner Container                                                       */
+/* -------------------------------------------------------------------------- */
+
+.hero__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 5rem 1.25rem;
+
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 3rem;
+  align-items: center;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Copy                                                                       */
+/* -------------------------------------------------------------------------- */
+
+.hero__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.hero__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.hero__title {
+  font-size: clamp(2.25rem, 4.5vw, 3.5rem);
+  line-height: 1.08;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.hero__subtitle {
+  max-width: 46ch;
+
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: var(--hero-muted);
+}
+
+/* -------------------------------------------------------------------------- */
+/* CTA Row                                                                    */
+/* -------------------------------------------------------------------------- */
+
+.hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Right Side (Media / 3D Placeholder)                                         */
+/* -------------------------------------------------------------------------- */
+
+.hero__media {
+  position: relative;
+
+  width: 100%;
+  min-height: 340px;
+
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.02)
+  );
+
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+/* A safe container for Three.js canvas or any 3D element */
+.hero__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Optional decorative overlay */
+.hero__glow {
+  position: absolute;
+  inset: -40%;
+  background: radial-gradient(
+    circle,
+    rgba(59, 130, 246, 0.35),
+    transparent 60%
+  );
+  filter: blur(40px);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Small Stats / Highlights (Optional)                                         */
+/* -------------------------------------------------------------------------- */
+
+.hero__highlights {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.hero__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+
+  padding: 0.4rem 0.7rem;
+
+  font-size: 0.75rem;
+  font-weight: 600;
+
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+
+  background-color: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Responsive                                                                 */
+/* -------------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .hero__inner {
+    grid-template-columns: 1fr;
+    padding: 4rem 1.25rem;
+  }
+
+  .hero__media {
+    min-height: 300px;
+  }
+}
+
+@media (max-width: 640px) {
+  .hero__inner {
+    padding: 3.25rem 1rem;
+  }
+
+  .hero__subtitle {
+    font-size: 1rem;
+  }
+}

@@ -1,0 +1,207 @@
+/* C:\Users\AB\Desktop\portfolio-website\styles\components\modals.css */
+
+/* ========================================================================== */
+/* MODAL SYSTEM                                                               */
+/* ========================================================================== */
+/*
+  Design goals:
+  - Framework agnostic (works with plain div, React portals, Radix, etc.)
+  - Accessible structure support:
+      - overlay
+      - dialog container
+      - focus-visible styling
+  - Smooth open/close transitions (can be controlled by CSS classes)
+  - Safe defaults for admin + public usage
+*/
+
+/* -------------------------------------------------------------------------- */
+/* Overlay                                                                    */
+/* -------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 1.25rem;
+
+  background-color: rgba(2, 6, 23, 0.65);
+  backdrop-filter: blur(6px);
+
+  z-index: 999;
+}
+
+/* When using aria-hidden toggles or conditional rendering,
+   you can apply this class to keep it non-interactive. */
+.modal-overlay--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Dialog Container                                                           */
+/* -------------------------------------------------------------------------- */
+
+.modal {
+  --modal-bg: var(--color-surface, #ffffff);
+  --modal-border: var(--color-border, #e5e7eb);
+
+  width: min(720px, 100%);
+  max-height: min(85vh, 900px);
+
+  background-color: var(--modal-bg);
+  border: 1px solid var(--modal-border);
+  border-radius: 1rem;
+
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+
+  display: flex;
+  flex-direction: column;
+
+  overflow: hidden;
+  transform: translateY(6px) scale(0.98);
+  opacity: 0;
+
+  animation: modal-in 0.16s ease forwards;
+}
+
+/* Size variants */
+.modal--sm {
+  width: min(420px, 100%);
+}
+
+.modal--lg {
+  width: min(960px, 100%);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Header / Body / Footer                                                     */
+/* -------------------------------------------------------------------------- */
+
+.modal__header {
+  padding: 1rem 1.25rem;
+
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+
+  border-bottom: 1px solid var(--modal-border);
+}
+
+.modal__title {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--color-text, #0f172a);
+}
+
+.modal__subtitle {
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-muted, #64748b);
+}
+
+.modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 2.25rem;
+  height: 2.25rem;
+
+  border-radius: 0.5rem;
+  border: 1px solid var(--modal-border);
+
+  background: transparent;
+  color: var(--color-text, #0f172a);
+
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.modal__close:hover {
+  background-color: rgba(2, 6, 23, 0.04);
+}
+
+.modal__close:active {
+  transform: translateY(1px);
+}
+
+.modal__close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+}
+
+.modal__body {
+  padding: 1.25rem;
+  overflow: auto;
+}
+
+.modal__footer {
+  padding: 0.9rem 1.25rem;
+
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+
+  border-top: 1px solid var(--modal-border);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Animations                                                                 */
+/* -------------------------------------------------------------------------- */
+
+@keyframes modal-in {
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Optional "closing" state:
+   Apply .modal--out before unmounting. */
+.modal--out {
+  animation: modal-out 0.14s ease forwards;
+}
+
+@keyframes modal-out {
+  to {
+    transform: translateY(6px) scale(0.98);
+    opacity: 0;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Dark Mode Support (if you add a data-theme attr later)                      */
+/* -------------------------------------------------------------------------- */
+
+[data-theme="dark"] .modal-overlay {
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+[data-theme="dark"] .modal {
+  --modal-bg: #0b1220;
+  --modal-border: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .modal__title {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+[data-theme="dark"] .modal__subtitle {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="dark"] .modal__close {
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+[data-theme="dark"] .modal__close:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}

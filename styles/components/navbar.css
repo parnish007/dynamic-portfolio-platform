@@ -1,0 +1,216 @@
+/* C:\Users\AB\Desktop\portfolio-website\styles\components\navbar.css */
+
+/* ========================================================================== */
+/* NAVBAR COMPONENT                                                           */
+/* ========================================================================== */
+/*
+  Design goals:
+  - Works for public site + admin shell
+  - Sticky, clean, responsive
+  - Supports links, dropdown later, and action buttons
+  - Theme-ready with CSS variables
+*/
+
+/* -------------------------------------------------------------------------- */
+/* Navbar Wrapper                                                             */
+/* -------------------------------------------------------------------------- */
+
+.navbar {
+  --nav-bg: rgba(255, 255, 255, 0.75);
+  --nav-border: rgba(2, 6, 23, 0.08);
+  --nav-text: var(--color-text, #0f172a);
+  --nav-muted: var(--color-muted, #64748b);
+
+  position: sticky;
+  top: 0;
+  z-index: 50;
+
+  width: 100%;
+
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+
+  background-color: var(--nav-bg);
+  border-bottom: 1px solid var(--nav-border);
+}
+
+/* Optional transparent mode for landing pages */
+.navbar--transparent {
+  --nav-bg: rgba(15, 23, 42, 0.25);
+  --nav-border: rgba(255, 255, 255, 0.08);
+  --nav-text: rgba(255, 255, 255, 0.96);
+  --nav-muted: rgba(255, 255, 255, 0.72);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Inner Container                                                            */
+/* -------------------------------------------------------------------------- */
+
+.navbar__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0.9rem 1.25rem;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Brand                                                                       */
+/* -------------------------------------------------------------------------- */
+
+.navbar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--nav-text);
+
+  text-decoration: none;
+}
+
+.navbar__logo {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.9), rgba(168, 85, 247, 0.9));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Links                                                                       */
+/* -------------------------------------------------------------------------- */
+
+.navbar__links {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.navbar__link {
+  position: relative;
+  font-size: 0.9rem;
+  font-weight: 600;
+
+  color: var(--nav-text);
+  text-decoration: none;
+  opacity: 0.92;
+
+  padding: 0.4rem 0.4rem;
+  border-radius: 0.5rem;
+
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.navbar__link:hover {
+  opacity: 1;
+  background-color: rgba(2, 6, 23, 0.04);
+}
+
+.navbar--transparent .navbar__link:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.navbar__link--active {
+  opacity: 1;
+}
+
+.navbar__link--active::after {
+  content: "";
+  position: absolute;
+  left: 0.45rem;
+  right: 0.45rem;
+  bottom: -0.3rem;
+
+  height: 2px;
+  border-radius: 999px;
+
+  background-color: rgba(37, 99, 235, 0.9);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Actions                                                                     */
+/* -------------------------------------------------------------------------- */
+
+.navbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Mobile Menu Button                                                          */
+/* -------------------------------------------------------------------------- */
+
+.navbar__menu-btn {
+  display: none;
+
+  width: 2.5rem;
+  height: 2.5rem;
+
+  border-radius: 0.65rem;
+  border: 1px solid var(--nav-border);
+
+  background-color: transparent;
+  color: var(--nav-text);
+
+  align-items: center;
+  justify-content: center;
+
+  cursor: pointer;
+}
+
+.navbar__menu-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Mobile Drawer                                                               */
+/* -------------------------------------------------------------------------- */
+
+.navbar__drawer {
+  display: none;
+  padding: 0.75rem 1.25rem 1rem;
+
+  border-top: 1px solid var(--nav-border);
+  background-color: var(--nav-bg);
+}
+
+.navbar__drawer-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.navbar__drawer .navbar__link {
+  padding: 0.65rem 0.6rem;
+}
+
+/* Toggle open */
+.navbar__drawer--open {
+  display: block;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Responsive                                                                 */
+/* -------------------------------------------------------------------------- */
+
+@media (max-width: 860px) {
+  .navbar__links {
+    display: none;
+  }
+
+  .navbar__menu-btn {
+    display: inline-flex;
+  }
+
+  .navbar__drawer {
+    display: none;
+  }
+}

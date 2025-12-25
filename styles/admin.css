@@ -1,0 +1,54 @@
+/* styles/admin.css */
+
+.admin-shell {
+  --admin-bg: #0b0e14;
+  --admin-text: #e6e6eb;
+  --admin-sidebar-bg: #111520;
+  --admin-border: rgba(255, 255, 255, 0.08);
+
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+
+  background: var(--admin-bg);
+  color: var(--admin-text);
+}
+
+.admin-shell__sidebar {
+  width: 260px;
+  padding: 20px 16px;
+  box-sizing: border-box;
+
+  background: var(--admin-sidebar-bg);
+  border-right: 1px solid var(--admin-border);
+}
+
+.admin-shell__brand {
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 24px;
+}
+
+.admin-shell__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  opacity: 0.88;
+  font-size: 14px;
+}
+
+.admin-shell__nav-item {
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: default;
+}
+
+.admin-shell__nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.admin-shell__main {
+  flex: 1;
+  padding: 24px 28px;
+  box-sizing: border-box;
+}

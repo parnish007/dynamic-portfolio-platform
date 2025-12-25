@@ -1,0 +1,208 @@
+/* C:\Users\AB\Desktop\portfolio-website\styles\globals.css */
+
+/* ========================================================================== */
+/* GLOBAL STYLES                                                              */
+/* ========================================================================== */
+/*
+  Goals:
+  - Clean base for public + admin UI
+  - CSS variables for theming
+  - Sensible typography defaults
+  - Accessible focus + selection
+  - Minimal resets (without fighting Tailwind if you add it later)
+*/
+
+/* -------------------------------------------------------------------------- */
+/* CSS Variables (Theme Tokens)                                               */
+/* -------------------------------------------------------------------------- */
+
+:root {
+  /* Brand */
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+
+  --color-secondary: #64748b;
+  --color-secondary-hover: #475569;
+
+  /* Surfaces */
+  --color-bg: #0b1220;
+  --color-surface: #ffffff;
+  --color-surface-2: #f8fafc;
+
+  /* Text */
+  --color-text: #0f172a;
+  --color-text-inverse: #ffffff;
+  --color-muted: #64748b;
+
+  /* Borders */
+  --color-border: rgba(2, 6, 23, 0.12);
+
+  /* States */
+  --color-danger: #dc2626;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+
+  /* Layout */
+  --container-max: 1200px;
+  --radius: 0.75rem;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.25);
+
+  /* Typography */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+
+  /* Motion */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Optional dark theme toggle */
+[data-theme="dark"] {
+  --color-bg: #070b14;
+  --color-surface: #0b1220;
+  --color-surface-2: #0f172a;
+
+  --color-text: rgba(255, 255, 255, 0.92);
+  --color-muted: rgba(255, 255, 255, 0.7);
+
+  --color-border: rgba(255, 255, 255, 0.12);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Base Reset                                                                 */
+/* -------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background-color: var(--color-bg);
+
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Layout Helpers                                                             */
+/* -------------------------------------------------------------------------- */
+
+.container {
+  width: 100%;
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+.section {
+  padding: 3.5rem 0;
+}
+
+.section--tight {
+  padding: 2rem 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Typography                                                                 */
+/* -------------------------------------------------------------------------- */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+small {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+pre {
+  overflow: auto;
+  padding: 1rem;
+  border-radius: var(--radius);
+  background-color: rgba(2, 6, 23, 0.06);
+  border: 1px solid var(--color-border);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Focus / Selection                                                          */
+/* -------------------------------------------------------------------------- */
+
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+  border-radius: 0.5rem;
+}
+
+::selection {
+  background-color: rgba(37, 99, 235, 0.25);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Scrollbar (optional subtle styling)                                        */
+/* -------------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}

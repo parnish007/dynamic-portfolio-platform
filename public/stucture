@@ -1,0 +1,25 @@
+public/
+├── assets/                 // General static assets like logos, icons, favicons
+│   ├── favicon.ico
+│   ├── logo.png
+│   └── placeholder/        // Placeholder images for projects/blogs
+│       ├── project-placeholder.png
+│       └── blog-placeholder.png
+├── images/                 // All images used in the site (hero, sections, backgrounds)
+│   ├── hero/
+│   │   ├── hero1.jpg
+│   │   └── hero2.jpg
+│   ├── sections/
+│   │   ├── section1.jpg
+│   │   └── section2.jpg
+│   └── projects/
+│       ├── project1.png
+│       └── project2.png
+├── icons/                  // SVGs or icon images
+│   ├── github.svg
+│   ├── linkedin.svg
+│   ├── twitter.svg
+│   └── email.svg
+├── fallback/               // Fallback assets if certain content fails to load
+│   └── 404.png
+└── robots.txt              // SEO file defining site crawling rules
