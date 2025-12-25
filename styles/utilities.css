@@ -1,5 +1,3 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\utilities.css */
-
 /* ========================================================================== */
 /* UTILITY CLASSES                                                            */
 /* ========================================================================== */
@@ -189,6 +187,36 @@
   word-break: break-word;
 }
 
+/* === COLOR SAFE TEXT HELPERS (IMPORTANT) === */
+
+.text-default {
+  color: var(--color-text);
+}
+
+.text-muted {
+  color: var(--color-muted);
+}
+
+.text-inverse {
+  color: var(--color-text-inverse);
+}
+
+.text-primary {
+  color: var(--color-primary);
+}
+
+.text-danger {
+  color: var(--color-danger);
+}
+
+.text-success {
+  color: var(--color-success);
+}
+
+.text-warning {
+  color: var(--color-warning);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Width / Height                                                             */
 /* -------------------------------------------------------------------------- */
@@ -338,6 +366,17 @@
 
 .is-hidden {
   display: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Admin Safety                                                               */
+/* -------------------------------------------------------------------------- */
+
+/* Prevent accidental invisible text in admin */
+[data-scope="admin"] .text-default,
+[data-scope="admin"] .text-muted,
+[data-scope="admin"] .text-primary {
+  color: inherit;
 }
 
 /* -------------------------------------------------------------------------- */

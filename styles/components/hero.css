@@ -1,15 +1,13 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\components\hero.css */
-
 /* ========================================================================== */
 /* HERO COMPONENT                                                             */
 /* ========================================================================== */
 /*
   Design goals:
-  - Works with a simple static hero OR a future 3D hero container
-  - Clean typography + CTA layout
-  - Responsive by default
-  - CSS variable friendly (theme-ready)
-  - Animation-safe (Framer Motion compatible)
+  - Public-facing hero
+  - Token-based colors
+  - Dark futuristic feel
+  - 3D / media ready
+  - Animation & theme safe
 */
 
 /* -------------------------------------------------------------------------- */
@@ -17,14 +15,15 @@
 /* -------------------------------------------------------------------------- */
 
 .hero {
-  --hero-bg: var(--color-bg, #0b1220);
-  --hero-text: var(--color-text-inverse, #ffffff);
-  --hero-muted: rgba(255, 255, 255, 0.78);
+  --hero-bg: var(--color-bg);
+  --hero-text: var(--color-text-inverse);
+  --hero-muted: var(--color-muted-soft);
 
   position: relative;
   overflow: hidden;
 
-  background: radial-gradient(
+  background:
+    radial-gradient(
       circle at 20% 20%,
       rgba(59, 130, 246, 0.22),
       transparent 55%
@@ -34,7 +33,11 @@
       rgba(168, 85, 247, 0.18),
       transparent 55%
     ),
-    linear-gradient(180deg, rgba(2, 6, 23, 0.9), rgba(2, 6, 23, 1));
+    linear-gradient(
+      180deg,
+      rgba(2, 6, 23, 0.92),
+      rgba(2, 6, 23, 1)
+    );
 
   color: var(--hero-text);
 }
@@ -44,7 +47,7 @@
 /* -------------------------------------------------------------------------- */
 
 .hero__inner {
-  max-width: 1200px;
+  max-width: var(--container-max);
   margin: 0 auto;
   padding: 5rem 1.25rem;
 
@@ -74,7 +77,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
 
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--hero-muted);
 }
 
 .hero__title {
@@ -82,6 +85,7 @@
   line-height: 1.08;
   font-weight: 800;
   letter-spacing: -0.02em;
+  color: var(--hero-text);
 }
 
 .hero__subtitle {
@@ -113,8 +117,8 @@
   width: 100%;
   min-height: 340px;
 
-  border-radius: 1rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
 
   background: linear-gradient(
     145deg,
@@ -122,11 +126,11 @@
     rgba(255, 255, 255, 0.02)
   );
 
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 
-/* A safe container for Three.js canvas or any 3D element */
+/* Three.js / Canvas safe container */
 .hero__canvas {
   position: absolute;
   inset: 0;
@@ -134,7 +138,7 @@
   height: 100%;
 }
 
-/* Optional decorative overlay */
+/* Decorative glow */
 .hero__glow {
   position: absolute;
   inset: -40%;
@@ -149,7 +153,7 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Small Stats / Highlights (Optional)                                         */
+/* Highlights / Pills                                                         */
 /* -------------------------------------------------------------------------- */
 
 .hero__highlights {
@@ -169,11 +173,11 @@
   font-size: 0.75rem;
   font-weight: 600;
 
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
 
-  background-color: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.9);
+  background-color: var(--color-surface-2);
+  color: var(--hero-text);
 }
 
 /* -------------------------------------------------------------------------- */

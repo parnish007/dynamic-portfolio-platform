@@ -1,10 +1,16 @@
 /* styles/admin.css */
 
+/* ================================
+   ROOT SHELL
+================================ */
+
 .admin-shell {
   --admin-bg: #0b0e14;
   --admin-text: #e6e6eb;
-  --admin-sidebar-bg: #111520;
+  --admin-muted: #9aa0b4;
+  --admin-sidebar-bg: #0f1322;
   --admin-border: rgba(255, 255, 255, 0.08);
+  --admin-accent: #4f7cff;
 
   display: flex;
   min-height: 100vh;
@@ -12,7 +18,13 @@
 
   background: var(--admin-bg);
   color: var(--admin-text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
 }
+
+/* ================================
+   SIDEBAR
+================================ */
 
 .admin-shell__sidebar {
   width: 260px;
@@ -21,34 +33,79 @@
 
   background: var(--admin-sidebar-bg);
   border-right: 1px solid var(--admin-border);
+
+  display: flex;
+  flex-direction: column;
 }
+
+/* ================================
+   BRAND
+================================ */
 
 .admin-shell__brand {
   font-size: 18px;
   font-weight: 800;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
+  color: #ffffff;
+  letter-spacing: 0.3px;
 }
+
+/* ================================
+   NAVIGATION
+================================ */
 
 .admin-shell__nav {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  opacity: 0.88;
-  font-size: 14px;
+  gap: 6px;
 }
 
 .admin-shell__nav-item {
-  padding: 8px 10px;
+  display: block;
+  padding: 10px 12px;
   border-radius: 10px;
-  cursor: default;
+
+  color: var(--admin-muted);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .admin-shell__nav-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(79, 124, 255, 0.15);
+  color: #ffffff;
 }
+
+/* ================================
+   MAIN CONTENT
+================================ */
 
 .admin-shell__main {
   flex: 1;
-  padding: 24px 28px;
+  padding: 28px 32px;
   box-sizing: border-box;
+
+  background: linear-gradient(
+    180deg,
+    #0b0e14 0%,
+    #0c1022 100%
+  );
+
+  color: var(--admin-text);
+}
+
+/* ================================
+   GLOBAL ADMIN TEXT SAFETY
+================================ */
+
+.admin-shell h1,
+.admin-shell h2,
+.admin-shell h3,
+.admin-shell h4,
+.admin-shell p,
+.admin-shell span,
+.admin-shell label {
+  color: inherit;
 }

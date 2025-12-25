@@ -1,19 +1,32 @@
 // app/api/media/route.ts
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 
-type MediaListItem = {
-  name: string;
-  id: string | null;
-  updatedAt: string | null;
-  createdAt: string | null;
-  lastAccessedAt: string | null;
-  metadata: Record<string, unknown> | null;
-};
-
 type ApiOk<T> = { ok: true } & T;
 type ApiErr = { ok: false; error: string; details?: string };
+
+type MediaListItem = {
+  publicId: string;
+  secureUrl: string | null;
+  url: string | null;
+
+  resourceType: "image" | "video" | "raw";
+  format: string | null;
+
+  bytes: number | null;
+  width: number | null;
+  height: number | null;
+
+  folder: string | null;
+  originalFilename: string | null;
+
+  createdAt: string | null;
+
+  // Your admin UI can optionally show these
+  requestedFolder: string | null;
+};
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -62,8 +75,8 @@ function isMediaAdminAuthorized(request: Request): boolean {
  * - DELETE: 60 req/min/IP
  */
 type RateEntry = { tokens: number; lastRefillMs: number };
-const RL_KEY_GET = "__portfolio_media_rl_get__";
-const RL_KEY_DELETE = "__portfolio_media_rl_delete__";
+const RL_KEY_GET = "__portfolio_cloudinary_media_rl_get__";
+const RL_KEY_DELETE = "__portfolio_cloudinary_media_rl_delete__";
 
 function getRateStore(key: string): Map<string, RateEntry> {
   const g = globalThis as unknown as Record<string, unknown>;
@@ -106,45 +119,36 @@ function allowRequest(args: {
   return { allowed: true };
 }
 
-function getSupabaseConfig(): { url: string; serviceKey: string; bucket: string } | null {
-  const url =
-    process.env.SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
-    "";
+function err(error: string, status: number, details?: string): Response {
+  const payload: ApiErr = { ok: false, error };
+  if (isNonEmptyString(details)) {
+    payload.details = details.slice(0, 2000);
+  }
+  return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
+}
 
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+function ok<T extends Record<string, unknown>>(data: T, status = 200): Response {
+  const payload: ApiOk<T> = { ok: true, ...data };
+  return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
+}
 
-  const bucket = isNonEmptyString(process.env.SUPABASE_MEDIA_BUCKET)
-    ? String(process.env.SUPABASE_MEDIA_BUCKET).trim()
-    : "media";
+function getCloudinaryConfig(): { cloudName: string; apiKey: string; apiSecret: string } | null {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME ?? "";
+  const apiKey = process.env.CLOUDINARY_API_KEY ?? "";
+  const apiSecret = process.env.CLOUDINARY_API_SECRET ?? "";
 
-  if (!isNonEmptyString(url) || !isNonEmptyString(serviceKey)) {
+  if (!isNonEmptyString(cloudName) || !isNonEmptyString(apiKey) || !isNonEmptyString(apiSecret)) {
     return null;
   }
 
-  return { url: String(url).trim().replace(/\/$/, ""), serviceKey: String(serviceKey).trim(), bucket };
+  return {
+    cloudName: cloudName.trim(),
+    apiKey: apiKey.trim(),
+    apiSecret: apiSecret.trim(),
+  };
 }
 
-function getPublicBaseUrl(): string | null {
-  const url =
-    process.env.SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
-    "";
-
-  if (!isNonEmptyString(url)) return null;
-  return String(url).trim().replace(/\/$/, "");
-}
-
-function shouldReturnPublicUrl(): boolean {
-  const env = process.env.MEDIA_UPLOAD_RETURN_PUBLIC_URL;
-  if (!isNonEmptyString(env)) return false;
-  const v = env.trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "on";
-}
-
-function sanitizePrefix(input: string): string {
+function sanitizeFolder(input: string): string {
   const raw = input.trim().replaceAll("\\", "/");
 
   const parts = raw
@@ -155,66 +159,86 @@ function sanitizePrefix(input: string): string {
     .map((p) => p.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40))
     .filter((p) => p.length > 0);
 
-  return parts.join("/").slice(0, 160);
+  const normalized = parts.join("/").slice(0, 160);
+
+  return normalized.length > 0 ? normalized : "";
 }
 
-function sanitizePath(input: string): string | null {
-  const p = sanitizePrefix(input);
-  if (!isNonEmptyString(p)) return null;
-  if (p.length < 3) return null;
-  return p;
+function cloudinaryFolderFromPrefix(prefixRaw: string | null): string | null {
+  const base = isNonEmptyString(process.env.CLOUDINARY_FOLDER_DEFAULT)
+    ? String(process.env.CLOUDINARY_FOLDER_DEFAULT).trim().replace(/\/+$/, "")
+    : "portfolio";
+
+  const prefix = isNonEmptyString(prefixRaw) ? sanitizeFolder(prefixRaw) : "";
+  if (!prefix) return base;
+
+  return `${base}/${prefix}`;
 }
 
-function buildPublicUrl(args: { base: string | null; bucket: string; path: string }): string | null {
-  if (!args.base) return null;
+function signCloudinary(params: Record<string, string>, apiSecret: string): string {
+  const sorted = Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+    .join("&");
 
-  const safePath = args.path
-    .split("/")
-    .filter((x) => x.length > 0)
-    .map((seg) => encodeURIComponent(seg))
-    .join("/");
-
-  return `${args.base}/storage/v1/object/public/${encodeURIComponent(args.bucket)}/${safePath}`;
+  return crypto.createHash("sha1").update(sorted + apiSecret).digest("hex");
 }
 
-function normalizeListItem(raw: Record<string, unknown>): MediaListItem | null {
-  const name = raw.name;
-  if (!isNonEmptyString(name)) return null;
+function normalizeResource(row: Record<string, unknown>): MediaListItem | null {
+  const publicId = row.public_id;
+  if (!isNonEmptyString(publicId)) return null;
 
-  const metadata = isPlainObject(raw.metadata) ? (raw.metadata as Record<string, unknown>) : null;
+  const secureUrl = isNonEmptyString(row.secure_url) ? String(row.secure_url) : null;
+  const url = isNonEmptyString(row.url) ? String(row.url) : null;
+
+  const rtRaw = row.resource_type;
+  const resourceType: "image" | "video" | "raw" =
+    rtRaw === "image" || rtRaw === "video" || rtRaw === "raw" ? rtRaw : "raw";
+
+  const format = isNonEmptyString(row.format) ? String(row.format) : null;
+
+  const bytes = typeof row.bytes === "number" && Number.isFinite(row.bytes) ? row.bytes : null;
+  const width = typeof row.width === "number" && Number.isFinite(row.width) ? row.width : null;
+  const height = typeof row.height === "number" && Number.isFinite(row.height) ? row.height : null;
+
+  const folder = isNonEmptyString(row.folder) ? String(row.folder) : null;
+
+  const originalFilename = isNonEmptyString(row.original_filename)
+    ? String(row.original_filename)
+    : null;
+
+  const createdAt = isNonEmptyString(row.created_at) ? String(row.created_at) : null;
+
+  // If you want, you can store your own "requestedFolder" in context/tags later.
+  // For now: we can infer "requestedFolder" only if folder includes base prefix.
+  const requestedFolder = null;
 
   return {
-    name: String(name),
-    id: typeof raw.id === "string" ? raw.id : null,
-    updatedAt: typeof raw.updated_at === "string" ? raw.updated_at : (raw.updatedAt as string | null) ?? null,
-    createdAt: typeof raw.created_at === "string" ? raw.created_at : (raw.createdAt as string | null) ?? null,
-    lastAccessedAt:
-      typeof raw.last_accessed_at === "string"
-        ? raw.last_accessed_at
-        : (raw.lastAccessedAt as string | null) ?? null,
-    metadata,
+    publicId: String(publicId),
+    secureUrl,
+    url,
+    resourceType,
+    format,
+    bytes,
+    width,
+    height,
+    folder,
+    originalFilename,
+    createdAt,
+    requestedFolder,
   };
-}
-
-function ok<T>(data: T, status = 200): Response {
-  const payload: ApiOk<T> = { ok: true, ...(data as Record<string, unknown>) } as ApiOk<T>;
-  return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function err(error: string, status: number, details?: string): Response {
-  const payload: ApiErr = { ok: false, error };
-  if (isNonEmptyString(details)) {
-    payload.details = details.slice(0, 2000);
-  }
-  return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 /**
  * GET /api/media
  * Query params:
- * - prefix: folder path inside bucket (e.g. "uploads/2025/12")
- * - limit: number of items to return (default 50, max 200)
- * - offset: for pagination (default 0)
+ * - prefix: folder under your CLOUDINARY_FOLDER_DEFAULT (example: "uploads/2025/12")
+ * - limit: default 50, max 200
+ * - nextCursor: cursor string from previous response (Cloudinary next_cursor)
+ *
+ * Returns:
+ * - items
+ * - page: { limit, nextCursor }
  */
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -236,74 +260,80 @@ export async function GET(request: Request): Promise<Response> {
     return err("Unauthorized. Set MEDIA_UPLOAD_SECRET and pass x-media-upload-secret.", 401);
   }
 
-  const cfg = getSupabaseConfig();
+  const cfg = getCloudinaryConfig();
   if (!cfg) {
     return err(
-      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+      "Missing Cloudinary configuration.",
       500,
+      "Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.",
     );
   }
 
   const url = new URL(request.url);
 
   const prefixRaw = url.searchParams.get("prefix");
-  const prefix = isNonEmptyString(prefixRaw) ? sanitizePrefix(prefixRaw) : "";
+  const folder = cloudinaryFolderFromPrefix(prefixRaw);
 
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 200);
-  const offset = clampInt(url.searchParams.get("offset"), 0, 0, 100_000);
+  const nextCursor = url.searchParams.get("nextCursor");
 
-  const listUrl = `${cfg.url}/storage/v1/object/list/${encodeURIComponent(cfg.bucket)}`;
+  // Cloudinary Admin API "resources by prefix" endpoint:
+  // GET https://api.cloudinary.com/v1_1/<cloud_name>/resources/by_prefix?prefix=<folder>&max_results=<limit>&next_cursor=<cursor>
+  const endpoint = new URL(`https://api.cloudinary.com/v1_1/${encodeURIComponent(cfg.cloudName)}/resources/by_prefix`);
+  endpoint.searchParams.set("prefix", folder ?? "");
+  endpoint.searchParams.set("max_results", String(limit));
+  if (isNonEmptyString(nextCursor)) {
+    endpoint.searchParams.set("next_cursor", nextCursor.trim());
+  }
 
-  const body: Record<string, unknown> = {
-    prefix: prefix.length > 0 ? `${prefix}/` : "",
-    limit,
-    offset,
-    sortBy: { column: "updated_at", order: "desc" },
-  };
+  // Basic auth with api_key:api_secret
+  const auth = Buffer.from(`${cfg.apiKey}:${cfg.apiSecret}`).toString("base64");
 
   try {
-    const res = await fetch(listUrl, {
-      method: "POST",
+    const res = await fetch(endpoint.toString(), {
+      method: "GET",
       headers: {
-        Authorization: `Bearer ${cfg.serviceKey}`,
-        apikey: cfg.serviceKey,
-        "Content-Type": "application/json",
+        Authorization: `Basic ${auth}`,
         Accept: "application/json",
       },
-      body: JSON.stringify(body),
       cache: "no-store",
     });
 
+    const text = await res.text();
+
     if (!res.ok) {
-      const text = await res.text();
       return err("Failed to list media.", 502, text);
     }
 
-    const json = (await res.json()) as unknown;
-
-    if (!Array.isArray(json)) {
-      return err("Unexpected response from storage list API.", 502);
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return err("Failed to list media.", 502, "Invalid Cloudinary JSON response.");
     }
 
-    const base = getPublicBaseUrl();
-    const includePublicUrl = shouldReturnPublicUrl();
+    if (!isPlainObject(json)) {
+      return err("Failed to list media.", 502, "Unexpected Cloudinary response.");
+    }
 
-    const items = (json as Array<Record<string, unknown>>)
-      .map((x) => (isPlainObject(x) ? (x as Record<string, unknown>) : null))
-      .filter((x): x is Record<string, unknown> => x !== null)
-      .map((x) => normalizeListItem(x))
-      .filter((x): x is MediaListItem => x !== null)
-      .map((x) => {
-        const fullPath = prefix.length > 0 ? `${prefix}/${x.name}` : x.name;
-        const url = includePublicUrl ? buildPublicUrl({ base, bucket: cfg.bucket, path: fullPath }) : null;
-        return { ...x, path: fullPath, url };
-      });
+    const resources = (json as Record<string, unknown>).resources;
+    const next = (json as Record<string, unknown>).next_cursor;
+
+    const items = Array.isArray(resources)
+      ? resources
+          .map((r) => (isPlainObject(r) ? (r as Record<string, unknown>) : null))
+          .filter((r): r is Record<string, unknown> => r !== null)
+          .map((r) => normalizeResource(r))
+          .filter((r): r is MediaListItem => r !== null)
+      : [];
 
     return ok(
       {
-        bucket: cfg.bucket,
-        prefix: prefix.length > 0 ? prefix : null,
-        page: { limit, offset, count: items.length },
+        folder,
+        page: {
+          limit,
+          nextCursor: isNonEmptyString(next) ? String(next) : null,
+        },
         items,
       },
       200,
@@ -317,7 +347,10 @@ export async function GET(request: Request): Promise<Response> {
 /**
  * DELETE /api/media
  * Body JSON:
- * - path: full object path inside bucket (e.g. "uploads/2025/12/25/file.png")
+ * - publicId: string (required)  // Cloudinary public_id
+ *
+ * NOTE:
+ * - This uses Cloudinary Admin API destroy endpoint.
  */
 export async function DELETE(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -339,11 +372,12 @@ export async function DELETE(request: Request): Promise<Response> {
     return err("Unauthorized. Set MEDIA_UPLOAD_SECRET and pass x-media-upload-secret.", 401);
   }
 
-  const cfg = getSupabaseConfig();
+  const cfg = getCloudinaryConfig();
   if (!cfg) {
     return err(
-      "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+      "Missing Cloudinary configuration.",
       500,
+      "Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.",
     );
   }
 
@@ -358,44 +392,97 @@ export async function DELETE(request: Request): Promise<Response> {
     return err("Invalid JSON body.", 400);
   }
 
-  const pathRaw = (bodyJson as Record<string, unknown>).path;
-  if (!isNonEmptyString(pathRaw)) {
-    return err("Field 'path' is required.", 400);
+  const publicIdRaw = (bodyJson as Record<string, unknown>).publicId;
+  if (!isNonEmptyString(publicIdRaw)) {
+    return err("Field 'publicId' is required.", 400);
   }
 
-  const path = sanitizePath(pathRaw);
-  if (!path) {
-    return err("Invalid path.", 400);
-  }
+  const publicId = publicIdRaw.trim();
 
-  const removeUrl = `${cfg.url}/storage/v1/object/remove/${encodeURIComponent(cfg.bucket)}`;
+  // Cloudinary destroy endpoint:
+  // POST https://api.cloudinary.com/v1_1/<cloud_name>/image/destroy (or video/raw)
+  //
+  // To avoid guessing resource_type, we try image -> video -> raw.
+  // This is safe and keeps your UI simple.
+  const auth = Buffer.from(`${cfg.apiKey}:${cfg.apiSecret}`).toString("base64");
 
-  try {
-    const res = await fetch(removeUrl, {
+  async function destroyWithType(resourceType: "image" | "video" | "raw"): Promise<Record<string, unknown>> {
+    const destroyUrl = `https://api.cloudinary.com/v1_1/${encodeURIComponent(cfg.cloudName)}/${resourceType}/destroy`;
+
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signParams: Record<string, string> = {
+      public_id: publicId,
+      timestamp,
+    };
+    const signature = signCloudinary(signParams, cfg.apiSecret);
+
+    const form = new FormData();
+    form.set("public_id", publicId);
+    form.set("timestamp", timestamp);
+    form.set("api_key", cfg.apiKey);
+    form.set("signature", signature);
+
+    const res = await fetch(destroyUrl, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${cfg.serviceKey}`,
-        apikey: cfg.serviceKey,
-        "Content-Type": "application/json",
+        Authorization: `Basic ${auth}`,
         Accept: "application/json",
       },
-      body: JSON.stringify({ prefixes: [path] }),
+      body: form,
       cache: "no-store",
     });
 
+    const text = await res.text();
+
     if (!res.ok) {
-      const text = await res.text();
-      return err("Failed to delete media.", 502, text);
+      throw new Error(text.slice(0, 2000));
     }
 
-    let deleted: unknown = null;
+    let json: unknown;
     try {
-      deleted = await res.json();
+      json = JSON.parse(text);
     } catch {
-      deleted = null;
+      throw new Error("Invalid Cloudinary JSON response.");
     }
 
-    return ok({ deleted: deleted ?? [path] }, 200);
+    if (!isPlainObject(json)) {
+      throw new Error("Unexpected Cloudinary response.");
+    }
+
+    return json as Record<string, unknown>;
+  }
+
+  try {
+    // Try in order (most common first)
+    const attempts: Array<"image" | "video" | "raw"> = ["image", "video", "raw"];
+
+    let lastErr: string | null = null;
+
+    for (const t of attempts) {
+      try {
+        const out = await destroyWithType(t);
+        const result = isNonEmptyString(out.result) ? String(out.result) : null;
+
+        // Cloudinary destroy result examples: "ok", "not found"
+        if (result === "ok") {
+          return ok({ deleted: { publicId, resourceType: t, result } }, 200);
+        }
+
+        if (result === "not found") {
+          // Try next type
+          lastErr = `not found in ${t}`;
+          continue;
+        }
+
+        // Other results: treat as success but pass through
+        return ok({ deleted: { publicId, resourceType: t, result: result ?? "unknown" } }, 200);
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : "Unknown error.";
+        // Try next
+      }
+    }
+
+    return err("Failed to delete media.", 502, lastErr ?? "Unknown error.");
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error.";
     return err("Unexpected server error.", 500, msg);

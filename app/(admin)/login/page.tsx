@@ -1,56 +1,47 @@
 // app/(admin)/login/page.tsx
+
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
+
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+
 
 export const metadata: Metadata = {
   title: "Admin Login",
   robots: { index: false, follow: false },
 };
 
-type ApiErr = { ok: false; error: string; details?: string };
+// ============================================
+// Server Action: Login (FINAL)
+// ============================================
 
-type LoginOk = {
-  ok: true;
-  user: {
-    id: string;
-    email?: string;
-  };
-};
+async function loginAction(formData: FormData) {
+  "use server";
 
-async function login(formData: FormData): Promise<LoginOk | ApiErr> {
-  try {
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      body: formData,
-      cache: "no-store",
-    });
+  const email = String(formData.get("email") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
 
-    const data = (await res.json()) as LoginOk | ApiErr;
-    return data;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error.";
-    return { ok: false, error: "Login failed.", details: msg };
+  if (!email || !password) {
+    throw new Error("Email and password are required.");
   }
+
+  const supabase = createSupabaseServerClient();
+
+
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  // ✅ cookies are written correctly here
+  redirect("/dashboard");
 }
 
-/**
- * Admin Login Page
- * -----------------------------
- * - Uses /api/auth/login
- * - Server Action based form
- * - No hardcoded credentials
- * - Middleware will redirect authenticated users away
- */
 export default function AdminLoginPage() {
-  async function action(formData: FormData) {
-    "use server";
-    const result = await login(formData);
-    if (result.ok) {
-      // middleware will redirect after auth cookie is set
-      return;
-    }
-    throw new Error(result.error);
-  }
-
   return (
     <main
       style={{
@@ -62,7 +53,7 @@ export default function AdminLoginPage() {
       }}
     >
       <form
-        action={action}
+        action={loginAction}
         style={{
           width: 360,
           padding: 24,
@@ -74,7 +65,9 @@ export default function AdminLoginPage() {
           gap: 14,
         }}
       >
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Admin Login</h1>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
+          Admin Login
+        </h1>
 
         <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={{ fontSize: 13, opacity: 0.8 }}>Email</span>

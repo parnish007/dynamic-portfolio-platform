@@ -1,17 +1,13 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\components\modals.css */
-
 /* ========================================================================== */
 /* MODAL SYSTEM                                                               */
 /* ========================================================================== */
 /*
   Design goals:
-  - Framework agnostic (works with plain div, React portals, Radix, etc.)
-  - Accessible structure support:
-      - overlay
-      - dialog container
-      - focus-visible styling
-  - Smooth open/close transitions (can be controlled by CSS classes)
-  - Safe defaults for admin + public usage
+  - Framework agnostic (plain div / React Portal / Radix)
+  - Accessible structure (overlay + dialog)
+  - Token-based theming
+  - Smooth open/close transitions
+  - Safe for admin + public UI
 */
 
 /* -------------------------------------------------------------------------- */
@@ -34,8 +30,6 @@
   z-index: 999;
 }
 
-/* When using aria-hidden toggles or conditional rendering,
-   you can apply this class to keep it non-interactive. */
 .modal-overlay--hidden {
   opacity: 0;
   pointer-events: none;
@@ -46,26 +40,27 @@
 /* -------------------------------------------------------------------------- */
 
 .modal {
-  --modal-bg: var(--color-surface, #ffffff);
-  --modal-border: var(--color-border, #e5e7eb);
+  --modal-bg: var(--color-surface);
+  --modal-border: var(--color-border);
 
   width: min(720px, 100%);
   max-height: min(85vh, 900px);
 
   background-color: var(--modal-bg);
   border: 1px solid var(--modal-border);
-  border-radius: 1rem;
+  border-radius: var(--radius-xl);
 
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 
   display: flex;
   flex-direction: column;
 
   overflow: hidden;
-  transform: translateY(6px) scale(0.98);
+
+  transform: translateY(8px) scale(0.98);
   opacity: 0;
 
-  animation: modal-in 0.16s ease forwards;
+  animation: modal-in 0.18s var(--ease-standard) forwards;
 }
 
 /* Size variants */
@@ -96,14 +91,14 @@
   font-size: 1rem;
   font-weight: 700;
   line-height: 1.3;
-  color: var(--color-text, #0f172a);
+  color: var(--color-text);
 }
 
 .modal__subtitle {
   margin-top: 0.25rem;
   font-size: 0.875rem;
   line-height: 1.5;
-  color: var(--color-muted, #64748b);
+  color: var(--color-muted);
 }
 
 .modal__close {
@@ -114,14 +109,18 @@
   width: 2.25rem;
   height: 2.25rem;
 
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
   border: 1px solid var(--modal-border);
 
   background: transparent;
-  color: var(--color-text, #0f172a);
+  color: var(--color-text);
 
   cursor: pointer;
-  transition: background-color 0.15s ease, transform 0.1s ease;
+
+  transition:
+    background-color 0.15s ease,
+    transform 0.1s ease,
+    box-shadow 0.15s ease;
 }
 
 .modal__close:hover {
@@ -139,7 +138,7 @@
 
 .modal__body {
   padding: 1.25rem;
-  overflow: auto;
+  overflow-y: auto;
 }
 
 .modal__footer {
@@ -163,25 +162,23 @@
   }
 }
 
-/* Optional "closing" state:
-   Apply .modal--out before unmounting. */
 .modal--out {
-  animation: modal-out 0.14s ease forwards;
+  animation: modal-out 0.14s var(--ease-standard) forwards;
 }
 
 @keyframes modal-out {
   to {
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(8px) scale(0.98);
     opacity: 0;
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Dark Mode Support (if you add a data-theme attr later)                      */
+/* Dark Theme                                                                 */
 /* -------------------------------------------------------------------------- */
 
 [data-theme="dark"] .modal-overlay {
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(0, 0, 0, 0.72);
 }
 
 [data-theme="dark"] .modal {

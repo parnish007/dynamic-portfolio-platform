@@ -122,10 +122,6 @@ function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
 function makeId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -148,9 +144,6 @@ function isPublished(project: StoredProject): boolean {
 
 /**
  * Fetch all published projects in a given section.
- *
- * NOTE:
- * "Projects are files inside section folders" → sectionId keeps that connection.
  */
 export async function getProjectsBySection(
   sectionId: string
@@ -166,13 +159,21 @@ export async function getProjectsBySection(
 
 /**
  * Fetch a single published project by slug.
+ *
+ * ⚠️ IMPORTANT:
+ * Supports both `string` and `string[]` because route is `[...slug]`
  */
 export async function getProjectBySlug(
-  slug: string
+  slug: string | string[]
 ): Promise<StoredProject | null> {
-  const s = slug.trim().toLowerCase();
+  const normalizedSlug =
+    typeof slug === "string"
+      ? slug.trim().toLowerCase()
+      : slug.join("/").trim().toLowerCase();
 
-  const project = PROJECTS.find((p) => p.slug === s && isPublished(p));
+  const project = PROJECTS.find(
+    (p) => p.slug === normalizedSlug && isPublished(p)
+  );
 
   return project ? deepClone(project) : null;
 }
@@ -183,19 +184,13 @@ export async function getProjectBySlug(
 export async function incrementProjectView(projectId: string): Promise<void> {
   const idx = PROJECTS.findIndex((p) => p.id === projectId);
 
-  if (idx === -1) {
-    return;
-  }
+  if (idx === -1) return;
 
   PROJECTS[idx].stats.views += 1;
 }
 
 /**
  * Create a project (DEV ONLY).
- * Validates + normalizes via lib/validation/project.
- *
- * Extra fields (sectionId, links, caseStudy, images) stay optional and can be
- * managed in your CMS layer later.
  */
 export async function createProject(
   payload: ProjectInput & {
@@ -282,9 +277,7 @@ export async function updateProject(
 export async function deleteProject(id: string): Promise<void> {
   const idx = PROJECTS.findIndex((p) => p.id === id);
 
-  if (idx === -1) {
-    return;
-  }
+  if (idx === -1) return;
 
   PROJECTS.splice(idx, 1);
 }

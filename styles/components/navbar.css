@@ -1,14 +1,13 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\components\navbar.css */
-
 /* ========================================================================== */
 /* NAVBAR COMPONENT                                                           */
 /* ========================================================================== */
 /*
   Design goals:
-  - Works for public site + admin shell
-  - Sticky, clean, responsive
-  - Supports links, dropdown later, and action buttons
-  - Theme-ready with CSS variables
+  - Public + admin safe
+  - Sticky + blur glass effect
+  - High contrast text (no invisible links)
+  - Responsive with mobile drawer
+  - Token-based theming
 */
 
 /* -------------------------------------------------------------------------- */
@@ -16,10 +15,10 @@
 /* -------------------------------------------------------------------------- */
 
 .navbar {
-  --nav-bg: rgba(255, 255, 255, 0.75);
-  --nav-border: rgba(2, 6, 23, 0.08);
-  --nav-text: var(--color-text, #0f172a);
-  --nav-muted: var(--color-muted, #64748b);
+  --nav-bg: rgba(255, 255, 255, 0.82);
+  --nav-border: var(--color-border);
+  --nav-text: var(--color-text);
+  --nav-muted: var(--color-muted);
 
   position: sticky;
   top: 0;
@@ -27,18 +26,18 @@
 
   width: 100%;
 
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 
   background-color: var(--nav-bg);
   border-bottom: 1px solid var(--nav-border);
 }
 
-/* Optional transparent mode for landing pages */
+/* Transparent / hero overlay mode */
 .navbar--transparent {
-  --nav-bg: rgba(15, 23, 42, 0.25);
-  --nav-border: rgba(255, 255, 255, 0.08);
-  --nav-text: rgba(255, 255, 255, 0.96);
+  --nav-bg: rgba(2, 6, 23, 0.45);
+  --nav-border: rgba(255, 255, 255, 0.12);
+  --nav-text: rgba(255, 255, 255, 0.95);
   --nav-muted: rgba(255, 255, 255, 0.72);
 }
 
@@ -47,9 +46,9 @@
 /* -------------------------------------------------------------------------- */
 
 .navbar__inner {
-  max-width: 1200px;
+  max-width: var(--container-max);
   margin: 0 auto;
-  padding: 0.9rem 1.25rem;
+  padding: 0.85rem 1.25rem;
 
   display: flex;
   align-items: center;
@@ -66,20 +65,26 @@
   align-items: center;
   gap: 0.6rem;
 
+  font-size: 0.95rem;
   font-weight: 800;
   letter-spacing: -0.02em;
-  color: var(--nav-text);
 
+  color: var(--nav-text);
   text-decoration: none;
 }
 
 .navbar__logo {
   width: 2rem;
   height: 2rem;
-  border-radius: 0.6rem;
+  border-radius: var(--radius-md);
 
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.9), rgba(168, 85, 247, 0.9));
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+  background: linear-gradient(
+    135deg,
+    rgba(37, 99, 235, 0.95),
+    rgba(168, 85, 247, 0.95)
+  );
+
+  box-shadow: var(--shadow-md);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -89,31 +94,35 @@
 .navbar__links {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.9rem;
 }
 
 .navbar__link {
   position: relative;
-  font-size: 0.9rem;
+
+  font-size: 0.875rem;
   font-weight: 600;
 
   color: var(--nav-text);
   text-decoration: none;
-  opacity: 0.92;
 
-  padding: 0.4rem 0.4rem;
-  border-radius: 0.5rem;
+  opacity: 0.9;
+  padding: 0.45rem 0.55rem;
+  border-radius: var(--radius-sm);
 
-  transition: opacity 0.15s ease, background-color 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .navbar__link:hover {
   opacity: 1;
-  background-color: rgba(2, 6, 23, 0.04);
+  background-color: rgba(2, 6, 23, 0.06);
 }
 
 .navbar--transparent .navbar__link:hover {
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: rgba(255, 255, 255, 0.14);
 }
 
 .navbar__link--active {
@@ -123,14 +132,13 @@
 .navbar__link--active::after {
   content: "";
   position: absolute;
-  left: 0.45rem;
-  right: 0.45rem;
-  bottom: -0.3rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: -0.35rem;
 
   height: 2px;
   border-radius: 999px;
-
-  background-color: rgba(37, 99, 235, 0.9);
+  background-color: var(--color-primary);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -144,7 +152,7 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Mobile Menu Button                                                          */
+/* Mobile Menu Button                                                         */
 /* -------------------------------------------------------------------------- */
 
 .navbar__menu-btn {
@@ -153,7 +161,7 @@
   width: 2.5rem;
   height: 2.5rem;
 
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   border: 1px solid var(--nav-border);
 
   background-color: transparent;
@@ -163,6 +171,18 @@
   justify-content: center;
 
   cursor: pointer;
+
+  transition:
+    background-color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.navbar__menu-btn:hover {
+  background-color: rgba(2, 6, 23, 0.06);
+}
+
+.navbar__menu-btn:active {
+  transform: translateY(1px);
 }
 
 .navbar__menu-btn:focus-visible {
@@ -171,7 +191,7 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Mobile Drawer                                                               */
+/* Mobile Drawer                                                              */
 /* -------------------------------------------------------------------------- */
 
 .navbar__drawer {
@@ -185,16 +205,27 @@
 .navbar__drawer-links {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.35rem;
 }
 
 .navbar__drawer .navbar__link {
-  padding: 0.65rem 0.6rem;
+  padding: 0.65rem 0.75rem;
 }
 
-/* Toggle open */
+/* Open state */
 .navbar__drawer--open {
   display: block;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Dark Theme                                                                 */
+/* -------------------------------------------------------------------------- */
+
+[data-theme="dark"] .navbar {
+  --nav-bg: rgba(11, 18, 32, 0.85);
+  --nav-border: rgba(255, 255, 255, 0.12);
+  --nav-text: rgba(255, 255, 255, 0.94);
+  --nav-muted: rgba(255, 255, 255, 0.7);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -208,9 +239,5 @@
 
   .navbar__menu-btn {
     display: inline-flex;
-  }
-
-  .navbar__drawer {
-    display: none;
   }
 }

@@ -1,14 +1,12 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\components\buttons.css */
-
 /* ========================================================================== */
 /* BUTTON SYSTEM                                                              */
 /* ========================================================================== */
 /*
   Design goals:
-  - Reusable across public + admin UI
-  - Accessible defaults
-  - Easy to theme later (CSS variables)
-  - Animation-friendly (Framer / CSS)
+  - Public + Admin safe
+  - Token-based colors only
+  - Accessible focus
+  - Dark UI compatible
 */
 
 /* -------------------------------------------------------------------------- */
@@ -16,10 +14,11 @@
 /* -------------------------------------------------------------------------- */
 
 .btn {
-  --btn-bg: var(--color-primary, #2563eb);
-  --btn-bg-hover: var(--color-primary-hover, #1d4ed8);
-  --btn-text: #ffffff;
+  --btn-bg: var(--color-primary);
+  --btn-bg-hover: var(--color-primary-hover);
+  --btn-text: var(--color-text-inverse);
   --btn-border: transparent;
+  --btn-ring: var(--color-primary-soft);
 
   display: inline-flex;
   align-items: center;
@@ -35,7 +34,7 @@
   color: var(--btn-text);
   background-color: var(--btn-bg);
   border: 1px solid var(--btn-border);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
 
   cursor: pointer;
   user-select: none;
@@ -43,11 +42,11 @@
   white-space: nowrap;
 
   transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease,
-    transform 0.1s ease,
-    box-shadow 0.15s ease;
+    background-color var(--duration-fast),
+    border-color var(--duration-fast),
+    color var(--duration-fast),
+    transform var(--duration-fast),
+    box-shadow var(--duration-fast);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -64,7 +63,7 @@
 
 .btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4);
+  box-shadow: 0 0 0 3px var(--btn-ring);
 }
 
 .btn:disabled,
@@ -78,43 +77,47 @@
 /* Variants                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/* Primary (default) */
+/* Primary */
 .btn--primary {
-  --btn-bg: var(--color-primary, #2563eb);
-  --btn-bg-hover: var(--color-primary-hover, #1d4ed8);
+  --btn-bg: var(--color-primary);
+  --btn-bg-hover: var(--color-primary-hover);
+  --btn-text: var(--color-text-inverse);
 }
 
 /* Secondary */
 .btn--secondary {
-  --btn-bg: var(--color-secondary, #64748b);
-  --btn-bg-hover: var(--color-secondary-hover, #475569);
+  --btn-bg: var(--color-secondary);
+  --btn-bg-hover: var(--color-secondary-hover);
+  --btn-text: var(--color-text-inverse);
 }
 
 /* Outline */
 .btn--outline {
   --btn-bg: transparent;
-  --btn-bg-hover: rgba(37, 99, 235, 0.08);
-  --btn-text: var(--color-primary, #2563eb);
-  --btn-border: var(--color-primary, #2563eb);
+  --btn-bg-hover: var(--color-primary-soft);
+  --btn-text: var(--color-primary);
+  --btn-border: var(--color-primary);
 }
 
 /* Ghost */
 .btn--ghost {
   --btn-bg: transparent;
-  --btn-bg-hover: rgba(0, 0, 0, 0.05);
-  --btn-text: var(--color-text, #0f172a);
+  --btn-bg-hover: var(--color-surface-2);
+  --btn-text: var(--color-text);
 }
 
 /* Danger */
 .btn--danger {
-  --btn-bg: #dc2626;
+  --btn-bg: var(--color-danger);
   --btn-bg-hover: #b91c1c;
+  --btn-text: var(--color-text-inverse);
 }
 
 /* Success */
 .btn--success {
-  --btn-bg: #16a34a;
+  --btn-bg: var(--color-success);
   --btn-bg-hover: #15803d;
+  --btn-text: var(--color-text-inverse);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -123,17 +126,17 @@
 
 .btn--sm {
   padding: 0.4rem 0.75rem;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 
 .btn--md {
   padding: 0.6rem 1rem;
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
 }
 
 .btn--lg {
   padding: 0.8rem 1.25rem;
-  font-size: 1rem;
+  font-size: var(--text-base);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -164,13 +167,13 @@
 }
 
 .btn-group .btn:first-child {
-  border-top-left-radius: 0.5rem;
-  border-bottom-left-radius: 0.5rem;
+  border-top-left-radius: var(--radius-md);
+  border-bottom-left-radius: var(--radius-md);
 }
 
 .btn-group .btn:last-child {
-  border-top-right-radius: 0.5rem;
-  border-bottom-right-radius: 0.5rem;
+  border-top-right-radius: var(--radius-md);
+  border-bottom-right-radius: var(--radius-md);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -180,7 +183,7 @@
 .btn--loading {
   pointer-events: none;
   position: relative;
-  color: transparent;
+  color: transparent !important;
 }
 
 .btn--loading::after {
@@ -188,8 +191,10 @@
   position: absolute;
   width: 1rem;
   height: 1rem;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-top-color: #ffffff;
+
+  border: 2px solid var(--color-border);
+  border-top-color: var(--btn-text);
+
   border-radius: 50%;
   animation: btn-spin 0.8s linear infinite;
 }
@@ -201,7 +206,7 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Admin-Specific Utilities                                                   */
+/* Utilities                                                                  */
 /* -------------------------------------------------------------------------- */
 
 .btn--block {

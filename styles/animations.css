@@ -1,14 +1,12 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\animations.css */
-
 /* ========================================================================== */
 /* GLOBAL ANIMATIONS & MOTION UTILITIES                                       */
 /* ========================================================================== */
 /*
   Design goals:
-  - Subtle, professional motion (portfolio-grade)
-  - Safe defaults for accessibility (reduced motion support)
-  - Reusable utility classes (public + admin)
-  - Compatible with CSS-only and Framer Motion usage
+  - Subtle, professional motion
+  - Token-based colors (no hardcoded light-only values)
+  - Admin + public safe
+  - Reduced-motion accessible
 */
 
 /* -------------------------------------------------------------------------- */
@@ -49,11 +47,11 @@
 }
 
 .animate-fade-in {
-  animation: fade-in 0.3s ease forwards;
+  animation: fade-in var(--duration-normal, 180ms) ease forwards;
 }
 
 .animate-fade-out {
-  animation: fade-out 0.2s ease forwards;
+  animation: fade-out var(--duration-fast, 120ms) ease forwards;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -104,20 +102,29 @@
   }
 }
 
+.animate-slide-up,
+.animate-slide-down,
+.animate-slide-left,
+.animate-slide-right {
+  animation-duration: var(--duration-normal, 180ms);
+  animation-timing-function: var(--ease-standard, ease);
+  animation-fill-mode: forwards;
+}
+
 .animate-slide-up {
-  animation: slide-up 0.35s ease forwards;
+  animation-name: slide-up;
 }
 
 .animate-slide-down {
-  animation: slide-down 0.35s ease forwards;
+  animation-name: slide-down;
 }
 
 .animate-slide-left {
-  animation: slide-left 0.35s ease forwards;
+  animation-name: slide-left;
 }
 
 .animate-slide-right {
-  animation: slide-right 0.35s ease forwards;
+  animation-name: slide-right;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -147,15 +154,15 @@
 }
 
 .animate-scale-in {
-  animation: scale-in 0.25s ease forwards;
+  animation: scale-in var(--duration-normal, 180ms) ease forwards;
 }
 
 .animate-scale-out {
-  animation: scale-out 0.2s ease forwards;
+  animation: scale-out var(--duration-fast, 120ms) ease forwards;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Stagger Helpers (used with inline styles / JS delays)                       */
+/* Stagger Helpers                                                            */
 /* -------------------------------------------------------------------------- */
 
 .stagger {
@@ -163,7 +170,8 @@
 }
 
 .stagger.animate {
-  animation: slide-up 0.4s ease forwards;
+  animation: slide-up var(--duration-normal, 180ms)
+    var(--ease-standard, ease) forwards;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -171,7 +179,8 @@
 /* -------------------------------------------------------------------------- */
 
 .hover-lift {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform var(--duration-fast, 120ms) ease,
+    box-shadow var(--duration-fast, 120ms) ease;
 }
 
 .hover-lift:hover {
@@ -179,7 +188,7 @@
 }
 
 .hover-scale {
-  transition: transform 0.15s ease;
+  transition: transform var(--duration-fast, 120ms) ease;
 }
 
 .hover-scale:hover {
@@ -187,11 +196,11 @@
 }
 
 .hover-glow {
-  transition: box-shadow 0.2s ease;
+  transition: box-shadow var(--duration-fast, 120ms) ease;
 }
 
 .hover-glow:hover {
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 0 0 3px var(--color-primary-soft, rgba(37, 99, 235, 0.25));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -200,13 +209,13 @@
 
 @keyframes pulse {
   0% {
-    opacity: 0.6;
+    opacity: 0.55;
   }
   50% {
     opacity: 1;
   }
   100% {
-    opacity: 0.6;
+    opacity: 0.55;
   }
 }
 
@@ -214,7 +223,7 @@
   animation: pulse 1.2s ease-in-out infinite;
 }
 
-/* Skeleton shimmer */
+/* Skeleton shimmer (TOKEN SAFE) */
 @keyframes shimmer {
   0% {
     background-position: -200% 0;
@@ -227,13 +236,13 @@
 .skeleton {
   background: linear-gradient(
     90deg,
-    rgba(203, 213, 225, 0.25) 25%,
-    rgba(203, 213, 225, 0.45) 37%,
-    rgba(203, 213, 225, 0.25) 63%
+    var(--color-surface-2) 25%,
+    var(--color-surface-3, var(--color-surface-2)) 37%,
+    var(--color-surface-2) 63%
   );
   background-size: 200% 100%;
   animation: shimmer 1.4s ease infinite;
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md, 0.5rem);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -260,13 +269,14 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Scroll-based Reveal (CSS-only fallback)                                    */
+/* Scroll-based Reveal                                                        */
 /* -------------------------------------------------------------------------- */
 
 .reveal {
   opacity: 0;
   transform: translateY(14px);
-  transition: opacity 0.5s ease, transform 0.5s ease;
+  transition: opacity var(--duration-normal, 180ms) ease,
+    transform var(--duration-normal, 180ms) ease;
 }
 
 .reveal.is-visible {

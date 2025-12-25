@@ -1,15 +1,12 @@
-/* C:\Users\AB\Desktop\portfolio-website\styles\components\footer.css */
-
 /* ========================================================================== */
 /* FOOTER COMPONENT                                                           */
 /* ========================================================================== */
 /*
   Design goals:
-  - Clean, minimal, and content-first
-  - Works for public site (portfolio)
-  - Responsive by default
-  - SEO-friendly structure
-  - Easy theming via CSS variables
+  - Public-site focused
+  - Token-based theming
+  - Dark-theme friendly
+  - SEO + accessibility safe
 */
 
 /* -------------------------------------------------------------------------- */
@@ -17,9 +14,9 @@
 /* -------------------------------------------------------------------------- */
 
 .footer {
-  --footer-bg: var(--color-surface, #0f172a);
-  --footer-text: var(--color-muted, #cbd5f5);
-  --footer-border: rgba(255, 255, 255, 0.08);
+  --footer-bg: var(--color-surface);
+  --footer-text: var(--color-muted);
+  --footer-border: var(--color-border);
 
   background-color: var(--footer-bg);
   color: var(--footer-text);
@@ -32,7 +29,7 @@
 /* -------------------------------------------------------------------------- */
 
 .footer__inner {
-  max-width: 1200px;
+  max-width: var(--container-max);
   margin: 0 auto;
   padding: 2.5rem 1.25rem;
 
@@ -54,7 +51,7 @@
 .footer__title {
   font-size: 0.875rem;
   font-weight: 600;
-  color: var(--color-text-inverse, #ffffff);
+  color: var(--color-text);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -62,6 +59,7 @@
 .footer__text {
   font-size: 0.875rem;
   line-height: 1.6;
+  color: var(--footer-text);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -79,16 +77,18 @@
 }
 
 .footer__link {
-  color: inherit;
   font-size: 0.875rem;
+  color: inherit;
   text-decoration: none;
-  opacity: 0.9;
-  transition: opacity 0.15s ease, color 0.15s ease;
+  opacity: 0.85;
+
+  transition: opacity var(--duration-fast),
+    color var(--duration-fast);
 }
 
 .footer__link:hover {
   opacity: 1;
-  color: #ffffff;
+  color: var(--color-text);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -109,15 +109,17 @@
   width: 2.25rem;
   height: 2.25rem;
 
-  border-radius: 999px;
-  background-color: rgba(255, 255, 255, 0.08);
-  color: #ffffff;
+  border-radius: var(--radius-full);
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
 
-  transition: background-color 0.15s ease, transform 0.15s ease;
+  transition:
+    background-color var(--duration-fast),
+    transform var(--duration-fast);
 }
 
 .footer__social-link:hover {
-  background-color: rgba(255, 255, 255, 0.18);
+  background-color: var(--color-primary-soft);
   transform: translateY(-2px);
 }
 
@@ -136,6 +138,7 @@
   justify-content: space-between;
 
   font-size: 0.75rem;
+  color: var(--footer-text);
   opacity: 0.85;
 }
 
