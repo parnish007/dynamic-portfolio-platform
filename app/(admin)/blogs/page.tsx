@@ -1,5 +1,8 @@
 // app/(admin)/blogs/page.tsx
+
 import type { Metadata } from "next";
+import type { CSSProperties } from "react";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Blogs",
@@ -11,7 +14,6 @@ type ApiErr = { ok: false; error: string; details?: string };
 type BlogsOk = {
   ok: true;
   blogs: Array<Record<string, unknown>>;
-  page?: { limit?: number; offset?: number; total?: number | null };
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -40,9 +42,11 @@ function formatDate(value: unknown): string {
 async function safeJson<T>(res: Response): Promise<T | ApiErr> {
   try {
     const data: unknown = await res.json();
+
     if (isPlainObject(data) && data.ok === false && typeof data.error === "string") {
       return data as ApiErr;
     }
+
     return data as T;
   } catch {
     return { ok: false, error: "Invalid JSON response." };
@@ -50,11 +54,18 @@ async function safeJson<T>(res: Response): Promise<T | ApiErr> {
 }
 
 async function getBlogs(): Promise<BlogsOk | ApiErr> {
-  // Uses your data-driven "items/blogs" API (canonical admin list source)
-  // includeUnpublished=true lets admins see drafts if your API supports it.
-  const url = "/api/items/blogs?includeUnpublished=true";
+  // ✅ Admin canonical source (protected by middleware + /api/auth/me)
+  const url = "/api/admin/blogs";
+
   try {
     const res = await fetch(url, { cache: "no-store" });
+
+    if (!res.ok) {
+      const parsed = await safeJson<ApiErr>(res);
+      if (isPlainObject(parsed) && parsed.ok === false) return parsed;
+      return { ok: false, error: `Failed to load blogs (HTTP ${res.status}).` };
+    }
+
     return await safeJson<BlogsOk>(res);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error.";
@@ -115,7 +126,7 @@ export default async function AdminBlogsPage() {
       <header style={{ marginBottom: 16 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Blogs</h1>
         <p style={{ marginTop: 6, opacity: 0.75 }}>
-          Admin list view. Blogs are fully data-driven and managed through your CMS.
+          Admin list view (protected). Manage drafts + published posts here.
         </p>
       </header>
 
@@ -130,29 +141,17 @@ export default async function AdminBlogsPage() {
       >
         {data ? (
           <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10 }}>
-            <div style={{ opacity: 0.7 }}>Total (visible)</div>
+            <div style={{ opacity: 0.7 }}>Total</div>
             <div>{blogs.length}</div>
 
             <div style={{ opacity: 0.7 }}>API Source</div>
             <div>
-              <code>/api/items/blogs?includeUnpublished=true</code>
-            </div>
-
-            <div style={{ opacity: 0.7 }}>Pagination</div>
-            <div style={{ opacity: 0.9 }}>
-              {data.page ? (
-                <>
-                  limit: {safeText(data.page.limit)} • offset: {safeText(data.page.offset)} • total:{" "}
-                  {data.page.total === null || data.page.total === undefined ? "-" : safeText(data.page.total)}
-                </>
-              ) : (
-                "-"
-              )}
+              <code>/api/admin/blogs</code>
             </div>
           </div>
         ) : (
           <div style={{ color: "#ff6b6b" }}>
-            Failed to load blogs from <code>/api/items/blogs</code>.
+            Failed to load blogs from <code>/api/admin/blogs</code>.
           </div>
         )}
       </div>
@@ -166,7 +165,7 @@ export default async function AdminBlogsPage() {
         }}
       >
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 920 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
             <thead>
               <tr style={{ background: "rgba(255,255,255,0.04)" }}>
                 <th style={thStyle}>Title</th>
@@ -175,12 +174,13 @@ export default async function AdminBlogsPage() {
                 <th style={thStyle}>Reading</th>
                 <th style={thStyle}>Updated</th>
                 <th style={thStyle}>ID</th>
+                <th style={thStyle}>Action</th>
               </tr>
             </thead>
             <tbody>
               {blogs.length === 0 ? (
                 <tr>
-                  <td style={tdStyle} colSpan={6}>
+                  <td style={tdStyle} colSpan={7}>
                     No blogs found.
                   </td>
                 </tr>
@@ -190,7 +190,7 @@ export default async function AdminBlogsPage() {
                   const slug = pickString(b, ["slug"]) ?? "-";
 
                   const published =
-                    pickBool(b, ["is_published", "isPublished", "published"]) ?? true;
+                    pickBool(b, ["is_published", "isPublished", "published"]) ?? false;
 
                   const readingMinutes =
                     pickNumber(b, ["reading_minutes", "readingMinutes", "reading_time", "readingTime"]) ??
@@ -198,8 +198,7 @@ export default async function AdminBlogsPage() {
                     null;
 
                   const excerpt =
-                    pickString(b, ["excerpt", "summary", "description"]) ??
-                    "";
+                    pickString(b, ["excerpt", "summary", "description"]) ?? "";
 
                   const updated =
                     pickString(b, ["updated_at", "updatedAt"]) ??
@@ -230,7 +229,9 @@ export default async function AdminBlogsPage() {
                             padding: "3px 10px",
                             borderRadius: 999,
                             border: "1px solid rgba(255,255,255,0.12)",
-                            background: published ? "rgba(46, 204, 113, 0.15)" : "rgba(241, 196, 15, 0.12)",
+                            background: published
+                              ? "rgba(46, 204, 113, 0.15)"
+                              : "rgba(241, 196, 15, 0.12)",
                             fontSize: 12,
                           }}
                         >
@@ -242,6 +243,15 @@ export default async function AdminBlogsPage() {
                       <td style={tdStyle}>
                         <code style={{ opacity: 0.85 }}>{id}</code>
                       </td>
+                      <td style={tdStyle}>
+                        {id !== "-" ? (
+                          <Link className="btn" href={`/admin/blogs/edit/${encodeURIComponent(id)}`}>
+                            Edit
+                          </Link>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
                     </tr>
                   );
                 })
@@ -252,13 +262,13 @@ export default async function AdminBlogsPage() {
       </div>
 
       <footer style={{ marginTop: 14, opacity: 0.65, fontSize: 13 }}>
-        Edit pages live in <code>app/(admin)/blogs/edit/[id]</code>.
+        Edit page: <code>app/(admin)/blogs/edit/[id]/page.tsx</code>
       </footer>
     </section>
   );
 }
 
-const thStyle: React.CSSProperties = {
+const thStyle: CSSProperties = {
   textAlign: "left",
   padding: "10px 10px",
   borderBottom: "1px solid rgba(255,255,255,0.08)",
@@ -266,7 +276,7 @@ const thStyle: React.CSSProperties = {
   opacity: 0.85,
 };
 
-const tdStyle: React.CSSProperties = {
+const tdStyle: CSSProperties = {
   padding: "10px 10px",
   borderBottom: "1px solid rgba(255,255,255,0.06)",
   verticalAlign: "top",

@@ -19,17 +19,20 @@ function isApiRoute(pathname: string): boolean {
   return pathname.startsWith("/api/");
 }
 
+function isAdminApiRoute(pathname: string): boolean {
+  return pathname === "/api/admin" || pathname.startsWith("/api/admin/");
+}
+
 /*
   Backwards-compatible admin detection:
   - Supports legacy root admin routes (/login, /dashboard, ...)
   - Supports new admin prefix routes (/admin/login, /admin/dashboard, ...)
 */
 function isAdminPath(pathname: string): boolean {
-  // New admin prefix
   if (pathname === "/admin") return true;
   if (pathname.startsWith("/admin/")) return true;
 
-  // Legacy root admin pages (route group at root)
+  // Legacy admin pages
   if (pathname === "/login") return true;
   if (pathname === "/dashboard") return true;
   if (pathname === "/content") return true;
@@ -47,15 +50,14 @@ function isAdminPath(pathname: string): boolean {
 }
 
 function isLoginPath(pathname: string): boolean {
-  // Allow both login locations
   return pathname === "/login" || pathname === "/admin/login";
 }
 
 function buildLoginRedirect(req: NextRequest): NextResponse {
   const next = req.nextUrl.pathname + (req.nextUrl.search || "");
-
-  // Redirect to the matching login system (prefer /admin/login when visiting /admin/*)
-  const loginPath = req.nextUrl.pathname.startsWith("/admin/") ? "/admin/login" : "/login";
+  const loginPath = req.nextUrl.pathname.startsWith("/admin/")
+    ? "/admin/login"
+    : "/login";
 
   const url = new URL(loginPath, req.url);
   url.searchParams.set("next", next);
@@ -69,9 +71,7 @@ function extractOkFromMePayload(payload: unknown): boolean {
   const p = payload as Record<string, unknown>;
 
   if (p.ok === true) return true;
-
   if (typeof p.authenticated === "boolean") return p.authenticated;
-
   if (p.user && typeof p.user === "object") return true;
 
   return false;
@@ -92,7 +92,6 @@ async function isAuthenticated(req: NextRequest): Promise<boolean> {
     if (!res.ok) return false;
 
     const data = (await res.json()) as unknown;
-
     return extractOkFromMePayload(data);
   } catch {
     return false;
@@ -103,18 +102,36 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (isPublicAsset(pathname)) return NextResponse.next();
-  if (isApiRoute(pathname)) return NextResponse.next();
 
+  // API handling
+  if (isApiRoute(pathname)) {
+    // ✅ Protect ONLY /api/admin/*
+    if (!isAdminApiRoute(pathname)) return NextResponse.next();
+
+    const ok = await isAuthenticated(req);
+
+    if (!ok) {
+      return NextResponse.json(
+        { ok: false, error: "UNAUTHENTICATED" },
+        {
+          status: 401,
+          headers: { "Cache-Control": "no-store" },
+        }
+      );
+    }
+
+    return NextResponse.next();
+  }
+
+  // Non-admin pages
   if (!isAdminPath(pathname)) return NextResponse.next();
 
-  // Always attach pathname header (safe) for active-link logic
   const res = NextResponse.next();
   res.headers.set("x-pathname", pathname);
 
   if (isLoginPath(pathname)) return res;
 
   const ok = await isAuthenticated(req);
-
   if (!ok) return buildLoginRedirect(req);
 
   return res;
@@ -122,10 +139,10 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
-    // New admin prefix
+    "/api/admin/:path*",
     "/admin/:path*",
 
-    // Legacy root admin routes (keep)
+    // Legacy admin routes
     "/login",
     "/dashboard",
     "/content",

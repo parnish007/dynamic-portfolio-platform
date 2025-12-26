@@ -3,7 +3,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { createSupabaseServerClient } from "@/lib/supabase/client";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: "Admin Login",
@@ -32,6 +32,21 @@ function getNextPath(searchParams?: AdminLoginPageProps["searchParams"]): string
   return next;
 }
 
+async function isAdminUser(args: {
+  supabase: ReturnType<typeof createSupabaseServerClient>;
+  userId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.supabase
+    .from("admins")
+    .select("user_id")
+    .eq("user_id", args.userId)
+    .maybeSingle();
+
+  if (error) return false;
+
+  return Boolean(data?.user_id);
+}
+
 // ============================================
 // Server Action: Login
 // ============================================
@@ -41,12 +56,19 @@ async function loginAction(formData: FormData) {
 
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-
   const next = String(formData.get("next") ?? "").trim();
 
+  const safeNext =
+    next && next.startsWith("/") && !next.startsWith("//")
+      ? next
+      : "/admin/dashboard";
+
   if (!email || !password) {
-    // Keep it simple: redirect back with error query
-    redirect(`/admin/login?error=${encodeURIComponent("Email and password are required.")}`);
+    redirect(
+      `/admin/login?error=${encodeURIComponent(
+        "Email and password are required."
+      )}&next=${encodeURIComponent(safeNext)}`
+    );
   }
 
   const supabase = createSupabaseServerClient();
@@ -57,19 +79,45 @@ async function loginAction(formData: FormData) {
   });
 
   if (error) {
-    redirect(`/admin/login?error=${encodeURIComponent(error.message)}&next=${encodeURIComponent(next || "/admin/dashboard")}`);
+    redirect(
+      `/admin/login?error=${encodeURIComponent(
+        "Invalid credentials."
+      )}&next=${encodeURIComponent(safeNext)}`
+    );
+  }
+
+  // Confirm user + enforce admins table
+  const { data: userRes } = await supabase.auth.getUser();
+  const user = userRes?.user;
+
+  if (!user) {
+    await supabase.auth.signOut();
+    redirect(
+      `/admin/login?error=${encodeURIComponent(
+        "Authentication failed. Please try again."
+      )}&next=${encodeURIComponent(safeNext)}`
+    );
+  }
+
+  const okAdmin = await isAdminUser({ supabase, userId: user.id });
+
+  if (!okAdmin) {
+    // Immediately revoke session for non-admins
+    await supabase.auth.signOut();
+    redirect(
+      `/admin/login?error=${encodeURIComponent(
+        "Access denied. Admins only."
+      )}&next=${encodeURIComponent(safeNext)}`
+    );
   }
 
   // cookies are written by the Supabase server client
-  if (next && next.startsWith("/") && !next.startsWith("//")) {
-    redirect(next);
-  }
-
-  redirect("/admin/dashboard");
+  redirect(safeNext);
 }
 
 export default function AdminLoginPage(props: AdminLoginPageProps) {
   const next = getNextPath(props.searchParams);
+
   const errorParam = props.searchParams?.error;
   const error =
     typeof errorParam === "string"
@@ -91,9 +139,7 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
     >
       <div className="adminCard" style={{ width: "100%", maxWidth: 420 }}>
         <h1 className="adminCard__title">Admin Login</h1>
-        <p className="adminCard__desc">
-          Authorized administrators only.
-        </p>
+        <p className="adminCard__desc">Authorized administrators only.</p>
 
         {error ? (
           <div
@@ -121,7 +167,13 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
         >
           <input type="hidden" name="next" value={next} />
 
-          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.35rem",
+            }}
+          >
             <span className="text-sm" style={{ color: "var(--color-muted)" }}>
               Email
             </span>
@@ -135,7 +187,13 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
             />
           </label>
 
-          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.35rem",
+            }}
+          >
             <span className="text-sm" style={{ color: "var(--color-muted)" }}>
               Password
             </span>
@@ -149,7 +207,11 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
             />
           </label>
 
-          <button className="btn btn--primary" type="submit" style={{ marginTop: "0.25rem" }}>
+          <button
+            className="btn btn--primary"
+            type="submit"
+            style={{ marginTop: "0.25rem" }}
+          >
             Sign in
           </button>
         </form>

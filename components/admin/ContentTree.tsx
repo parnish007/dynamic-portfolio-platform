@@ -45,7 +45,9 @@ function buildTree(nodes: ContentNode[]): TreeNode[] {
   }
 
   for (const n of nodes) {
-    const node = map.get(n.id)!;
+    const node = map.get(n.id);
+    if (!node) continue;
+
     const parentId = n.parent_id;
 
     if (!parentId) {
@@ -116,14 +118,15 @@ export default function ContentTree() {
       setLoading(true);
       setError(null);
 
-      const res = await fetch("/api/admin/content-nodes", { cache: "no-store" });
+      const res = await fetch("/api/admin/sections", { cache: "no-store" });
       const data: unknown = await res.json();
 
       if (!res.ok) {
         const msg =
-          isPlainObject(data) && typeof data.error === "string"
-            ? data.error
+          isPlainObject(data) && typeof (data as ApiErr).error === "string"
+            ? (data as ApiErr).error
             : `Request failed (${res.status})`;
+
         setError(msg);
         setNodes([]);
         return;
@@ -171,13 +174,18 @@ export default function ContentTree() {
     try {
       setError(null);
 
-      const res = await fetch("/api/admin/content-nodes", {
+      const parent_id =
+        selected?.node_type === "folder"
+          ? selected.id
+          : selected?.parent_id ?? null;
+
+      const res = await fetch("/api/admin/sections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: title.trim(),
-          nodeType: "folder",
-          parentId: selected?.node_type === "folder" ? selected.id : selected?.parent_id ?? null,
+          node_type: "folder",
+          parent_id,
         }),
       });
 
@@ -185,9 +193,10 @@ export default function ContentTree() {
 
       if (!res.ok) {
         const msg =
-          isPlainObject(data) && typeof data.error === "string"
-            ? data.error
+          isPlainObject(data) && typeof (data as ApiErr).error === "string"
+            ? (data as ApiErr).error
             : `Create failed (${res.status})`;
+
         setError(msg);
         return;
       }
@@ -212,7 +221,7 @@ export default function ContentTree() {
     try {
       setError(null);
 
-      const res = await fetch(`/api/admin/content-nodes/${selected.id}`, {
+      const res = await fetch(`/api/admin/sections/${selected.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -222,15 +231,15 @@ export default function ContentTree() {
 
       if (!res.ok) {
         const msg =
-          isPlainObject(data) && typeof data.error === "string"
-            ? data.error
+          isPlainObject(data) && typeof (data as ApiErr).error === "string"
+            ? (data as ApiErr).error
             : `Rename failed (${res.status})`;
+
         setError(msg);
         return;
       }
 
       const ok = data as NodeOk;
-
       setNodes((prev) => prev.map((n) => (n.id === ok.node.id ? ok.node : n)));
     } catch (e) {
       setError(safeError(e));
@@ -251,7 +260,7 @@ export default function ContentTree() {
     try {
       setError(null);
 
-      const res = await fetch(`/api/admin/content-nodes/${selected.id}`, {
+      const res = await fetch(`/api/admin/sections/${selected.id}`, {
         method: "DELETE",
       });
 
@@ -259,16 +268,17 @@ export default function ContentTree() {
 
       if (!res.ok) {
         const msg =
-          isPlainObject(data) && typeof data.error === "string"
-            ? data.error
+          isPlainObject(data) && typeof (data as ApiErr).error === "string"
+            ? (data as ApiErr).error
             : `Delete failed (${res.status})`;
+
         setError(msg);
         return;
       }
 
       const ok = data as Ok;
 
-      if (!ok.ok) {
+      if (!ok || ok.ok !== true) {
         setError("Delete failed.");
         return;
       }
@@ -310,13 +320,24 @@ export default function ContentTree() {
         >
           <div>
             <p style={{ margin: 0, fontWeight: 800 }}>Tree</p>
-            <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
+            <p
+              style={{
+                margin: 0,
+                fontSize: "var(--text-xs)",
+                color: "var(--color-muted)",
+              }}
+            >
               Folders can contain folders + items.
             </p>
           </div>
 
           <div style={{ display: "flex", gap: "var(--space-2)" }}>
-            <button className="btn" type="button" onClick={() => void load()} disabled={loading}>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => void load()}
+              disabled={loading}
+            >
               Refresh
             </button>
             <button className="btn" type="button" onClick={() => void createFolder()}>
@@ -360,12 +381,15 @@ export default function ContentTree() {
                         padding: "10px 10px",
                         borderRadius: "var(--radius-md)",
                         border: "1px solid transparent",
-                        background: isSelected ? "rgba(37, 99, 235, 0.14)" : "transparent",
+                        background: isSelected
+                          ? "rgba(37, 99, 235, 0.14)"
+                          : "transparent",
                         color: "var(--color-text)",
                         cursor: "pointer",
                       }}
                     >
                       <span style={{ display: "inline-block", width: depth * 14 }} />
+
                       {showCaret ? (
                         <span
                           onClick={(e) => {
@@ -394,7 +418,12 @@ export default function ContentTree() {
                       )}
 
                       <span style={{ fontWeight: 800 }}>{node.title}</span>
-                      <span style={{ fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
+                      <span
+                        style={{
+                          fontSize: "var(--text-xs)",
+                          color: "var(--color-muted)",
+                        }}
+                      >
                         {node.node_type}
                       </span>
                     </button>
@@ -419,9 +448,7 @@ export default function ContentTree() {
               <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
                 Title
               </p>
-              <p style={{ marginTop: 6, marginBottom: 0, fontWeight: 800 }}>
-                {selected.title}
-              </p>
+              <p style={{ marginTop: 6, marginBottom: 0, fontWeight: 800 }}>{selected.title}</p>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "var(--space-2)" }}>

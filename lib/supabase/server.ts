@@ -1,5 +1,7 @@
 // lib/supabase/server.ts
 
+import "server-only";
+
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
@@ -10,7 +12,9 @@ export function createSupabaseServerClient() {
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !anonKey) {
-    throw new Error("Supabase URL or Anon Key missing");
+    throw new Error(
+      "Missing Supabase env. Required: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY"
+    );
   }
 
   return createServerClient(url, anonKey, {
@@ -19,9 +23,16 @@ export function createSupabaseServerClient() {
         return cookieStore.getAll();
       },
       setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value, options }) => {
-          cookieStore.set(name, value, options);
-        });
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set({ name, value, ...options });
+          });
+        } catch {
+          /**
+           * In some server execution contexts, cookie writes can be restricted.
+           * We fail silently so auth reads still work and we avoid crashing routes.
+           */
+        }
       },
     },
   });

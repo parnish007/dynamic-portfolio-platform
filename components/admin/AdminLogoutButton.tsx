@@ -22,7 +22,6 @@ export default function AdminLogoutButton() {
 
       const res = await fetch("/api/auth/logout", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
       });
 
       const data: unknown = await res.json().catch(() => null);
@@ -40,14 +39,14 @@ export default function AdminLogoutButton() {
 
       const ok = data as LogoutOk;
 
-      if (!ok || (ok as LogoutOk).ok !== true) {
+      if (!ok || ok.ok !== true) {
         setError("Logout failed.");
         setLoading(false);
         return;
       }
 
       // Hard redirect ensures cookies are cleared and middleware re-checks.
-      window.location.href = "/login";
+      window.location.href = "/admin/login";
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setError(msg);
@@ -56,7 +55,14 @@ export default function AdminLogoutButton() {
   }
 
   return (
-    <div style={{ display: "inline-flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+    <div
+      style={{
+        display: "inline-flex",
+        flexDirection: "column",
+        gap: 6,
+        alignItems: "flex-end",
+      }}
+    >
       <button
         className="btn btn--danger"
         type="button"
@@ -68,7 +74,13 @@ export default function AdminLogoutButton() {
       </button>
 
       {error ? (
-        <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-danger)" }}>
+        <p
+          style={{
+            margin: 0,
+            fontSize: "var(--text-xs)",
+            color: "var(--color-danger)",
+          }}
+        >
           {error}
         </p>
       ) : null}

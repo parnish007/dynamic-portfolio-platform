@@ -88,37 +88,72 @@ function allowRequest(args: {
 }
 
 /**
- * Admin protection:
- * - If ADMIN_API_SECRET is set, require:
- *   x-admin-api-secret: <secret>
- *
- * (Later replace with real admin session auth.)
+ * Admin protection (aligned with your platform requirements):
+ * - Primary: session-based auth via /api/auth/me (Supabase cookies)
+ * - Optional override: if ADMIN_API_SECRET is set, allow x-admin-api-secret too
  */
-function isAdminAuthorized(request: Request): boolean {
+async function isAdminAuthorized(request: Request): Promise<boolean> {
   const secret = process.env.ADMIN_API_SECRET;
-  if (!isNonEmptyString(secret)) {
-    // Dev-friendly: allow if not set
-    return true;
+
+  // Optional header-secret override (useful for scripts/automation)
+  if (isNonEmptyString(secret)) {
+    const header = request.headers.get("x-admin-api-secret");
+    if (isNonEmptyString(header) && header.trim() === secret.trim()) {
+      return true;
+    }
   }
-  const header = request.headers.get("x-admin-api-secret");
-  if (!isNonEmptyString(header)) return false;
-  return header.trim() === secret.trim();
+
+  // Session-based auth using cookies (required for real admin usage)
+  try {
+    const cookie = request.headers.get("cookie") ?? "";
+    if (!cookie) return false;
+
+    const url = new URL(request.url);
+    const meUrl = new URL("/api/auth/me", url.origin);
+
+    const res = await fetch(meUrl, {
+      method: "GET",
+      headers: {
+        cookie,
+      },
+      cache: "no-store",
+    });
+
+    if (!res.ok) return false;
+
+    const data: unknown = await res.json();
+
+    if (!isPlainObject(data)) return false;
+
+    const ok = data.ok === true;
+    const authenticated =
+      typeof data.authenticated === "boolean" ? data.authenticated : false;
+
+    return Boolean(ok && authenticated);
+  } catch {
+    return false;
+  }
 }
 
 function getSupabaseBaseUrl(): string | null {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
     "";
 
   if (!isNonEmptyString(url)) return null;
+
   return String(url).trim().replace(/\/$/, "");
 }
 
 function getAnonKey(): string | null {
-  const key = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+  const key =
+    process.env.SUPABASE_ANON_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+    "";
+
   if (!isNonEmptyString(key)) return null;
+
   return String(key).trim();
 }
 
@@ -137,7 +172,10 @@ function getSettingsTable(): string {
 function jsonErr(error: string, status: number, details?: string): Response {
   const payload: ApiErr = { ok: false, error };
   if (isNonEmptyString(details)) payload.details = details.slice(0, 2000);
-  return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(payload, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 function envFallbackSettings(): Record<string, unknown> {
@@ -207,7 +245,6 @@ async function postgrestSelectOne(args: {
   const url = new URL(`${args.supabaseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
   url.searchParams.set("select", args.select);
 
-  // append so repeated keys don't overwrite
   for (const f of args.filters) {
     url.searchParams.append(f.key, f.value);
   }
@@ -248,12 +285,10 @@ async function postgrestUpsertOne(args: {
 }): Promise<Record<string, unknown> | null> {
   const url = new URL(`${args.supabaseUrl}/rest/v1/${encodeURIComponent(args.table)}`);
 
-  // Ensure upsert conflict target is applied
   if (isNonEmptyString(args.conflictTarget)) {
     url.searchParams.set("on_conflict", args.conflictTarget);
   }
 
-  // Ensure we actually get representation back
   url.searchParams.set("select", args.select);
 
   const res = await fetch(url.toString(), {
@@ -295,7 +330,6 @@ function deepMergeObjects(a: Record<string, unknown>, b: Record<string, unknown>
       continue;
     }
 
-    // Arrays and primitives replace entirely (predictable + safe)
     out[k] = v;
   }
 
@@ -304,10 +338,7 @@ function deepMergeObjects(a: Record<string, unknown>, b: Record<string, unknown>
 
 /**
  * GET /api/settings
- *
  * Public-safe: uses ANON key only.
- * If your settings table contains sensitive values, enforce RLS to limit what anon can read,
- * or split into public_settings vs admin_settings.
  */
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -378,10 +409,8 @@ export async function GET(request: Request): Promise<Response> {
 
 /**
  * PATCH /api/settings
- *
  * Admin-only: uses SERVICE ROLE key only.
- * Body:
- * - patch: object (required)
+ * Body: { patch: object }
  */
 export async function PATCH(request: Request): Promise<Response> {
   const ip = getClientIp(request);
@@ -399,7 +428,8 @@ export async function PATCH(request: Request): Promise<Response> {
     });
   }
 
-  if (!isAdminAuthorized(request)) {
+  const authorized = await isAdminAuthorized(request);
+  if (!authorized) {
     return jsonErr("Unauthorized.", 401);
   }
 

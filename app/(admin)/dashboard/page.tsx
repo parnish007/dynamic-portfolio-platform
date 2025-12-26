@@ -51,6 +51,11 @@ function getRequestOrigin(): string | null {
   return `${proto}://${host}`;
 }
 
+function getCookieHeader(): string {
+  const h = headers();
+  return h.get("cookie") ?? "";
+}
+
 async function safeJson<T>(res: Response): Promise<T | ApiErr> {
   try {
     const data: unknown = await res.json();
@@ -65,12 +70,18 @@ async function safeJson<T>(res: Response): Promise<T | ApiErr> {
   }
 }
 
-async function getAnalyticsSummary(origin: string | null): Promise<AnalyticsSummaryOk | ApiErr> {
+async function getAnalyticsSummary(
+  origin: string | null,
+  cookieHeader: string
+): Promise<AnalyticsSummaryOk | ApiErr> {
   if (!origin) return { ok: false, error: "Missing request origin. Cannot call internal API." };
 
   try {
     const res = await fetch(new URL("/api/analytics/summary", origin), {
       cache: "no-store",
+      headers: {
+        cookie: cookieHeader,
+      },
     });
 
     if (!res.ok) {
@@ -84,12 +95,18 @@ async function getAnalyticsSummary(origin: string | null): Promise<AnalyticsSumm
   }
 }
 
-async function getSettings(origin: string | null): Promise<SettingsOk | ApiErr> {
+async function getSettings(
+  origin: string | null,
+  cookieHeader: string
+): Promise<SettingsOk | ApiErr> {
   if (!origin) return { ok: false, error: "Missing request origin. Cannot call internal API." };
 
   try {
     const res = await fetch(new URL("/api/settings", origin), {
       cache: "no-store",
+      headers: {
+        cookie: cookieHeader,
+      },
     });
 
     if (!res.ok) {
@@ -132,8 +149,12 @@ function readNumber(obj: Record<string, unknown> | null, keys: string[]): number
 
 export default async function AdminDashboardPage() {
   const origin = getRequestOrigin();
+  const cookieHeader = getCookieHeader();
 
-  const [summaryRes, settingsRes] = await Promise.all([getAnalyticsSummary(origin), getSettings(origin)]);
+  const [summaryRes, settingsRes] = await Promise.all([
+    getAnalyticsSummary(origin, cookieHeader),
+    getSettings(origin, cookieHeader),
+  ]);
 
   const summaryOk = isPlainObject(summaryRes) && (summaryRes as AnalyticsSummaryOk).ok === true;
   const summary = summaryOk ? (summaryRes as AnalyticsSummaryOk) : null;
@@ -183,7 +204,7 @@ export default async function AdminDashboardPage() {
           </div>
 
           {!summary && (
-            <div style={{ marginTop: 10, color: "#ff6b6b" }}>
+            <div style={{ marginTop: 10, color: "var(--color-danger, #ff6b6b)" }}>
               Failed to load analytics from <code>/api/analytics/summary</code>.
             </div>
           )}
@@ -209,7 +230,7 @@ export default async function AdminDashboardPage() {
               <div>{Object.keys(settings.settings ?? {}).length}</div>
             </div>
           ) : (
-            <div style={{ marginTop: 10, color: "#ff6b6b" }}>
+            <div style={{ marginTop: 10, color: "var(--color-danger, #ff6b6b)" }}>
               Failed to load settings from <code>/api/settings</code>.
             </div>
           )}

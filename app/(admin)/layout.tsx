@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import Link from "next/link";
+import { headers } from "next/headers";
 
 import "@/styles/admin.css";
 
@@ -36,7 +37,15 @@ const navItems = [
   { href: "/admin/chatbot", label: "Chatbot" },
 ];
 
+function isActiveLink(pathname: string, href: string): boolean {
+  if (!pathname) return false;
+  if (pathname === href) return true;
+  return pathname.startsWith(href + "/");
+}
+
 export default function AdminLayout({ children }: AdminLayoutProps) {
+  const pathname = headers().get("x-pathname") ?? "";
+
   return (
     <div className="admin" data-scope="admin">
       <div className="admin__shell">
@@ -58,11 +67,19 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </div>
 
           <nav className="admin__nav">
-            {navItems.map((item) => (
-              <Link key={item.href} className="admin__link" href={item.href}>
-                {item.label}
-              </Link>
-            ))}
+            {navItems.map((item) => {
+              const active = isActiveLink(pathname, item.href);
+
+              return (
+                <Link
+                  key={item.href}
+                  className={`admin__link ${active ? "admin__link--active" : ""}`}
+                  href={item.href}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
           </nav>
         </aside>
 

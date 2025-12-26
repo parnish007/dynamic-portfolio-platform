@@ -2,7 +2,9 @@
 
 import { NextResponse } from "next/server";
 
-import { createSupabaseServerClient } from "@/lib/supabase/client";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+export const runtime = "nodejs";
 
 type LogoutOk = {
   ok: true;
@@ -15,7 +17,18 @@ type LogoutErr = {
 
 function jsonError(status: number, error: string) {
   const payload: LogoutErr = { ok: false, error };
-  return NextResponse.json(payload, { status });
+  return NextResponse.json(payload, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+function jsonOk() {
+  const payload: LogoutOk = { ok: true };
+  return NextResponse.json(payload, {
+    status: 200,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 export async function POST() {
@@ -28,12 +41,9 @@ export async function POST() {
       return jsonError(500, error.message);
     }
 
-    const payload: LogoutOk = { ok: true };
-
-    return NextResponse.json(payload, { status: 200 });
+    return jsonOk();
   } catch (error) {
-    const isProd =
-      (process.env.NODE_ENV ?? "").toLowerCase() === "production";
+    const isProd = (process.env.NODE_ENV ?? "").toLowerCase() === "production";
 
     if (!isProd) {
       const msg = error instanceof Error ? error.message : "Unknown error.";

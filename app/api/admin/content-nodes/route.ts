@@ -2,18 +2,24 @@
 
 import { NextResponse } from "next/server";
 
-import { createSupabaseServerClient } from "@/lib/supabase/client";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
 type NodeType = "folder" | "section" | "project" | "blog";
 
 function json(status: number, body: unknown) {
-  return NextResponse.json(body, { status });
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 // ---------------------------------------------
 // Admin Guard (safe, minimal, non-breaking)
+// - Supports BOTH schemas:
+//   A) admins.user_id = auth.users.id   (recommended)
+//   B) admins.id      = auth.users.id   (legacy)
 // ---------------------------------------------
 async function requireAdmin(
   supabase: ReturnType<typeof createSupabaseServerClient>
@@ -24,13 +30,35 @@ async function requireAdmin(
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  const { data: adminRow } = await supabase
+  const userId = userRes.user.id;
+
+  // Preferred: user_id column
+  const { data: byUserId, error: e1 } = await supabase
     .from("admins")
-    .select("id")
-    .eq("id", userRes.user.id)
+    .select("user_id")
+    .eq("user_id", userId)
     .maybeSingle();
 
-  if (!adminRow) {
+  if (!e1 && byUserId) {
+    return { ok: true as const };
+  }
+
+  // Fallback: id column (legacy)
+  const { data: byId, error: e2 } = await supabase
+    .from("admins")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (e2) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "INTERNAL_ERROR" as const,
+    };
+  }
+
+  if (!byId) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
@@ -104,6 +132,7 @@ export async function POST(req: Request) {
       order_index: typeof body.orderIndex === "number" ? body.orderIndex : 0,
       icon: body.icon ?? null,
       description: body.description ?? null,
+      updated_at: new Date().toISOString(),
     };
 
     const { data, error } = await supabase
@@ -136,4 +165,15 @@ export async function PATCH() {
 
 export async function DELETE() {
   return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type",
+    },
+  });
 }

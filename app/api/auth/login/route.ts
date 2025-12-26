@@ -3,8 +3,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { createSession } from "@/lib/auth/session";
-import { verifyPassword } from "@/lib/auth/password";
+import { loginWithEmailPassword } from "@/lib/auth/login";
 
 type LoginBody = {
   email?: unknown;
@@ -123,26 +122,17 @@ export async function POST(req: NextRequest) {
     }
 
     /**
-     * Credentials validation via helper
-     * (DB/Supabase later)
+     * Authenticate via Supabase (sets auth cookies on server)
      */
-    const isValid = await verifyPassword(email, password);
+    const result = await loginWithEmailPassword(email, password);
 
-    if (!isValid) {
+    if (!result.ok) {
+      // Keep behavior consistent: invalid credentials -> 401
+      // Supabase may return messages like "Invalid login credentials"
       return jsonError(401, "Invalid credentials.");
     }
 
-    const response = NextResponse.json({ ok: true } satisfies LoginOk, { status: 200 });
-
-    /**
-     * Create secure session cookie
-     */
-    await createSession(response, {
-      email,
-      role: "admin",
-    });
-
-    return response;
+    return NextResponse.json({ ok: true } satisfies LoginOk, { status: 200 });
   } catch (error) {
     /**
      * Avoid leaking internals in production.

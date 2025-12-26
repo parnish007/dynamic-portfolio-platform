@@ -23,6 +23,10 @@ type PopularItem = {
 
 type AnalyticsSummaryResponse = {
   ok: true;
+
+  /**
+   * New format (current)
+   */
   period: SummaryPeriod;
   fromTs: number;
   toTs: number;
@@ -49,10 +53,19 @@ type AnalyticsSummaryResponse = {
     blogs: PopularItem[];
   };
   warnings: string[];
+
+  /**
+   * Back-compat format (admin dashboard currently expects these)
+   * - range.from / range.to are ISO strings
+   * - totals.pageviews is an alias of totals.pageViews
+   * - series is a simplified chart list
+   */
+  range?: { from?: string; to?: string };
+  series?: Array<Record<string, unknown>>;
 };
 
 function jsonError(status: number, message: string) {
-  return NextResponse.json({ message }, { status });
+  return NextResponse.json({ ok: false, error: message }, { status });
 }
 
 function safeTrim(v: unknown, maxLen: number): string {
@@ -185,6 +198,27 @@ function normalizeStoredSummary(
   };
 }
 
+function addBackCompatFields(summary: AnalyticsSummaryResponse): AnalyticsSummaryResponse {
+  const fromIso = new Date(summary.fromTs).toISOString();
+  const toIso = new Date(summary.toTs).toISOString();
+
+  // Keep originals and add aliases for existing admin UI expectations
+  summary.range = { from: fromIso, to: toIso };
+
+  // Alias totals.pageviews expected by dashboard
+  const totalsAny = summary.totals as unknown as Record<string, unknown>;
+  totalsAny.pageviews = summary.totals.pageViews;
+
+  // Provide a small "series" array for simple UIs
+  summary.series = [
+    { key: "pageViews", points: summary.charts.pageViews },
+    { key: "chatbotMessages", points: summary.charts.chatbotMessages },
+    { key: "livechatMessages", points: summary.charts.livechatMessages },
+  ];
+
+  return summary;
+}
+
 function buildEmptySummary(args: {
   period: SummaryPeriod;
   fromTs: number;
@@ -259,13 +293,13 @@ export async function GET(req: Request) {
     if (stored) {
       const normalized = normalizeStoredSummary(stored, { period, fromTs, toTs });
       normalized.warnings.push(...extraWarnings);
-      return NextResponse.json(normalized, { status: 200 });
+      return NextResponse.json(addBackCompatFields(normalized), { status: 200 });
     }
 
     const empty = buildEmptySummary({ period, fromTs, toTs });
     empty.warnings.push(...extraWarnings);
 
-    return NextResponse.json(empty, { status: 200 });
+    return NextResponse.json(addBackCompatFields(empty), { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to build analytics summary";
     return jsonError(500, message);

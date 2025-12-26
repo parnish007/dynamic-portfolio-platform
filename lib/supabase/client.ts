@@ -1,13 +1,16 @@
 // lib/supabase/client.ts
 
 // ============================================
-// Supabase SSR Clients (Browser / Server / Middleware)
+// Supabase Clients
+// - Browser Client: Client Components only
+// - Middleware Client: middleware.ts only (request/response cookie sync)
+// NOTE:
+// - Server Route Handlers / Server Components should use:
+//   import { createSupabaseServerClient } from "@/lib/supabase/server";
 // ============================================
 
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-
-import { cookies } from "next/headers";
 
 import { createBrowserClient, createServerClient } from "@supabase/ssr";
 
@@ -47,29 +50,6 @@ export function createSupabaseBrowserClient() {
 export const supabaseClient = createSupabaseBrowserClient;
 
 // ============================================
-// Server Client (Server Components / Route Handlers)
-// Uses Next.js "cookies()" for read/write.
-// ============================================
-
-export function createSupabaseServerClient() {
-  const cookieStore = cookies();
-
-  return createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
-    cookies: {
-      get(name) {
-        return cookieStore.get(name)?.value;
-      },
-      set(name, value, options) {
-        cookieStore.set({ name, value, ...options });
-      },
-      remove(name, options) {
-        cookieStore.set({ name, value: "", ...options });
-      },
-    },
-  });
-}
-
-// ============================================
 // Middleware Client (Request/Response cookie sync)
 // IMPORTANT:
 // - Must accept both request and response
@@ -94,3 +74,11 @@ export function createSupabaseMiddlewareClient(
     },
   });
 }
+
+// ============================================
+// Backward compatibility (DO NOT use going forward)
+// Some older files may still import createSupabaseServerClient from here.
+// We re-export from the canonical server helper to avoid breaking.
+// ============================================
+
+export { createSupabaseServerClient } from "@/lib/supabase/server";
