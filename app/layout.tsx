@@ -3,7 +3,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
-import "@/styles/variables.css";
 import "@/styles/globals.css";
 import "@/styles/typography.css";
 import "@/styles/utilities.css";
@@ -48,8 +47,6 @@ export const metadata: Metadata = {
     description: "A fully dynamic, SEO-first, AI-powered personal platform.",
   },
 
-  // Safer: avoid globally forcing index=true.
-  // Let public pages be indexable by default, and admin/private pages set noindex explicitly.
   robots: {
     index: true,
     follow: true,
@@ -60,23 +57,20 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: "#09090b",
+  themeColor: "#0b0f17",
 };
 
 type RootLayoutProps = {
   children: ReactNode;
 };
 
-export default function RootLayout({ children }: RootLayoutProps) {
+export default function RootLayout(props: RootLayoutProps) {
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="dark" />
       </head>
-
-      <body className="min-h-dvh bg-zinc-950 text-zinc-100 antialiased">
-        {children}
-      </body>
+      <body>{props.children}</body>
     </html>
   );
 }

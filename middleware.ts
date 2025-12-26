@@ -19,11 +19,17 @@ function isApiRoute(pathname: string): boolean {
   return pathname.startsWith("/api/");
 }
 
-/**
- * Your admin pages are mounted at ROOT because (admin) is a route group:
- * /login, /dashboard, /content, /blogs, /projects, etc.
- */
+/*
+  Backwards-compatible admin detection:
+  - Supports legacy root admin routes (/login, /dashboard, ...)
+  - Supports new admin prefix routes (/admin/login, /admin/dashboard, ...)
+*/
 function isAdminPath(pathname: string): boolean {
+  // New admin prefix
+  if (pathname === "/admin") return true;
+  if (pathname.startsWith("/admin/")) return true;
+
+  // Legacy root admin pages (route group at root)
   if (pathname === "/login") return true;
   if (pathname === "/dashboard") return true;
   if (pathname === "/content") return true;
@@ -41,13 +47,19 @@ function isAdminPath(pathname: string): boolean {
 }
 
 function isLoginPath(pathname: string): boolean {
-  return pathname === "/login";
+  // Allow both login locations
+  return pathname === "/login" || pathname === "/admin/login";
 }
 
 function buildLoginRedirect(req: NextRequest): NextResponse {
   const next = req.nextUrl.pathname + (req.nextUrl.search || "");
-  const url = new URL("/login", req.url);
+
+  // Redirect to the matching login system (prefer /admin/login when visiting /admin/*)
+  const loginPath = req.nextUrl.pathname.startsWith("/admin/") ? "/admin/login" : "/login";
+
+  const url = new URL(loginPath, req.url);
   url.searchParams.set("next", next);
+
   return NextResponse.redirect(url);
 }
 
@@ -95,17 +107,25 @@ export async function middleware(req: NextRequest) {
 
   if (!isAdminPath(pathname)) return NextResponse.next();
 
-  if (isLoginPath(pathname)) return NextResponse.next();
+  // Always attach pathname header (safe) for active-link logic
+  const res = NextResponse.next();
+  res.headers.set("x-pathname", pathname);
+
+  if (isLoginPath(pathname)) return res;
 
   const ok = await isAuthenticated(req);
 
   if (!ok) return buildLoginRedirect(req);
 
-  return NextResponse.next();
+  return res;
 }
 
 export const config = {
   matcher: [
+    // New admin prefix
+    "/admin/:path*",
+
+    // Legacy root admin routes (keep)
     "/login",
     "/dashboard",
     "/content",

@@ -1,13 +1,20 @@
-// C:\Users\AB\Desktop\portfolio-website\tailwind.config.js
+// tailwind.config.js
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   /*
     Tailwind is OPTIONAL in this project.
-    This config is aligned with your CSS-first system:
-    - CSS variables are the source of truth
-    - Tailwind is used only as a utility accelerator
+
+    Strategy (P0 CSS Fix):
+    - CSS variables + CSS files are the source of truth
+    - Tailwind is an *opt-in* utility accelerator
+    - To avoid unreadable UI from conflicts:
+      1) Disable Tailwind preflight (we use our own globals.css)
+      2) Prefix all Tailwind classes with "tw-"
+         Example: tw-bg-bg tw-text-text tw-flex tw-gap-3
   */
+
+  prefix: "tw-",
 
   content: [
     "./app/**/*.{ts,tsx}",
@@ -15,6 +22,12 @@ module.exports = {
     "./hooks/**/*.{ts,tsx}",
     "./services/**/*.{ts,tsx}",
   ],
+
+  darkMode: ["class", '[data-theme="dark"]'],
+
+  corePlugins: {
+    preflight: false,
+  },
 
   theme: {
     container: {
@@ -44,11 +57,14 @@ module.exports = {
         bg: "var(--color-bg)",
         surface: "var(--color-surface)",
         "surface-2": "var(--color-surface-2)",
+        "surface-3": "var(--color-surface-3)",
 
         text: "var(--color-text)",
         muted: "var(--color-muted)",
+        "muted-soft": "var(--color-muted-soft)",
 
         border: "var(--color-border)",
+        "border-strong": "var(--color-border-strong)",
 
         success: "var(--color-success)",
         warning: "var(--color-warning)",
@@ -112,15 +128,5 @@ module.exports = {
     },
   },
 
-  plugins: [
-    /*
-      Keep plugins MINIMAL.
-      Add only if explicitly needed.
-      Examples (optional):
-        require("@tailwindcss/typography"),
-        require("@tailwindcss/forms"),
-    */
-  ],
-
-  darkMode: ["class", '[data-theme="dark"]'],
+  plugins: [],
 };

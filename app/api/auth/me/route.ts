@@ -2,7 +2,7 @@
 
 import { NextResponse } from "next/server";
 
-import { getSession } from "@/lib/auth/session";
+import { createSupabaseServerClient } from "@/lib/supabase/client";
 
 type MeOk = {
   ok: true;
@@ -26,15 +26,30 @@ type MeErr = {
   details?: string;
 };
 
-function json(status: number, body: MeOk | MeNoAuth | MeErr) {
+type MeMethod = {
+  ok: false;
+  authenticated: false;
+  error: "METHOD_NOT_ALLOWED";
+  details?: string;
+};
+
+function json(
+  status: number,
+  body: MeOk | MeNoAuth | MeErr | MeMethod
+) {
   return NextResponse.json(body, { status });
 }
 
 export async function GET() {
   try {
-    const result = await getSession();
+    const supabase = createSupabaseServerClient();
 
-    if (!result.ok || !result.data.session || !result.data.user) {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error || !user) {
       const payload: MeNoAuth = {
         ok: false,
         authenticated: false,
@@ -48,8 +63,8 @@ export async function GET() {
       ok: true,
       authenticated: true,
       user: {
-        email: result.data.user.email ?? "",
-        role: "admin", // ⬅️ static for now (upgrade later via claims/DB)
+        email: user.email ?? "",
+        role: "admin",
       },
     };
 
@@ -77,12 +92,12 @@ export async function GET() {
  * Method guard
  */
 export async function POST() {
-  const payload: MeErr = {
+  const payload: MeMethod = {
     ok: false,
     authenticated: false,
-    error: "INTERNAL_ERROR",
+    error: "METHOD_NOT_ALLOWED",
     details: "Method not allowed. Use GET.",
   };
 
-  return NextResponse.json(payload, { status: 405 });
+  return json(405, payload);
 }

@@ -2,7 +2,7 @@
 
 import { NextResponse } from "next/server";
 
-import { clearSession } from "@/lib/auth/session";
+import { createSupabaseServerClient } from "@/lib/supabase/client";
 
 type LogoutOk = {
   ok: true;
@@ -20,17 +20,20 @@ function jsonError(status: number, error: string) {
 
 export async function POST() {
   try {
-    const response = NextResponse.json({ ok: true } satisfies LogoutOk, { status: 200 });
+    const supabase = createSupabaseServerClient();
 
-    await clearSession(response);
+    const { error } = await supabase.auth.signOut();
 
-    return response;
+    if (error) {
+      return jsonError(500, error.message);
+    }
+
+    const payload: LogoutOk = { ok: true };
+
+    return NextResponse.json(payload, { status: 200 });
   } catch (error) {
-    /**
-     * Avoid leaking internals in production.
-     * You can hook analytics/error logging later.
-     */
-    const isProd = (process.env.NODE_ENV ?? "").toLowerCase() === "production";
+    const isProd =
+      (process.env.NODE_ENV ?? "").toLowerCase() === "production";
 
     if (!isProd) {
       const msg = error instanceof Error ? error.message : "Unknown error.";

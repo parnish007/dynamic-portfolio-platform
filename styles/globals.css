@@ -1,78 +1,18 @@
+/* styles/globals.css */
+
+@import "./variables.css";
+
 /* ========================================================================== */
 /* GLOBAL STYLES                                                              */
 /* ========================================================================== */
 /*
   Goals:
   - Clean base for public + admin UI
-  - CSS variables for theming
+  - Single token source: variables.css
   - Sensible typography defaults
   - Accessible focus + selection
   - Minimal resets
 */
-
-/* -------------------------------------------------------------------------- */
-/* CSS Variables (Theme Tokens)                                               */
-/* -------------------------------------------------------------------------- */
-
-:root {
-  /* Brand */
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-
-  --color-secondary: #64748b;
-  --color-secondary-hover: #475569;
-
-  /* Surfaces (PUBLIC DEFAULT) */
-  --color-bg: #0b1220;
-  --color-surface: #ffffff;
-  --color-surface-2: #f8fafc;
-
-  /* Text (PUBLIC DEFAULT) */
-  --color-text: #0f172a;
-  --color-text-inverse: #ffffff;
-  --color-muted: #64748b;
-
-  /* Borders */
-  --color-border: rgba(2, 6, 23, 0.12);
-
-  /* States */
-  --color-danger: #dc2626;
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-
-  /* Layout */
-  --container-max: 1200px;
-  --radius: 0.75rem;
-
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.12);
-  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.25);
-
-  /* Typography */
-  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
-    Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
-
-  /* Motion */
-  --ease: cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Optional public dark theme toggle                                          */
-/* -------------------------------------------------------------------------- */
-
-[data-theme="dark"] {
-  --color-bg: #070b14;
-  --color-surface: #0b1220;
-  --color-surface-2: #0f172a;
-
-  --color-text: rgba(255, 255, 255, 0.92);
-  --color-muted: rgba(255, 255, 255, 0.7);
-
-  --color-border: rgba(255, 255, 255, 0.12);
-}
 
 /* -------------------------------------------------------------------------- */
 /* Base Reset                                                                 */
@@ -89,13 +29,22 @@ body {
   height: 100%;
 }
 
+html {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   padding: 0;
 
   font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--lh-normal);
+
   color: var(--color-text);
-  background-color: var(--color-bg);
+  background: radial-gradient(1200px 800px at 20% -10%, rgba(124, 58, 237, 0.20), transparent 55%),
+    radial-gradient(900px 700px at 100% 0%, rgba(34, 197, 94, 0.14), transparent 45%),
+    var(--color-bg);
 
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -103,15 +52,20 @@ body {
 }
 
 img,
-video {
+video,
+svg {
   max-width: 100%;
   height: auto;
   display: block;
 }
 
 a {
-  color: inherit;
+  color: var(--color-primary);
   text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
 }
 
 button,
@@ -119,6 +73,7 @@ input,
 textarea,
 select {
   font: inherit;
+  color: inherit;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -150,19 +105,21 @@ h3,
 h4,
 h5,
 h6 {
-  margin: 0;
-  line-height: 1.15;
+  margin: 0 0 0.75rem 0;
+  line-height: var(--lh-tight);
   letter-spacing: -0.02em;
+  color: var(--color-text);
 }
 
 p {
-  margin: 0;
+  margin: 0 0 1rem 0;
   line-height: 1.7;
+  color: var(--color-muted);
 }
 
 small {
-  font-size: 0.875rem;
-  color: var(--color-muted);
+  font-size: var(--text-sm);
+  color: var(--color-muted-soft);
 }
 
 code,
@@ -173,9 +130,71 @@ pre {
 pre {
   overflow: auto;
   padding: 1rem;
-  border-radius: var(--radius);
-  background-color: rgba(2, 6, 23, 0.06);
+  border-radius: var(--radius-lg);
+  background-color: rgba(0, 0, 0, 0.18);
   border: 1px solid var(--color-border);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared UI Primitives                                                       */
+/* -------------------------------------------------------------------------- */
+
+.card {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(10px);
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text);
+
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-md);
+
+  font-weight: 700;
+  cursor: pointer;
+
+  transition: transform var(--duration-fast) var(--ease-standard),
+    background var(--duration-normal) var(--ease-standard),
+    border-color var(--duration-normal) var(--ease-standard);
+}
+
+.btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  text-decoration: none;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn--primary {
+  border-color: rgba(124, 58, 237, 0.50);
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.92), rgba(124, 58, 237, 0.58));
+}
+
+.btn--danger {
+  border-color: rgba(239, 68, 68, 0.50);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.92), rgba(239, 68, 68, 0.58));
+}
+
+.input {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--color-text);
+
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-md);
+}
+
+.input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -184,12 +203,12 @@ pre {
 
 :focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
-  border-radius: 0.5rem;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
 }
 
 ::selection {
-  background-color: rgba(37, 99, 235, 0.25);
+  background-color: rgba(124, 58, 237, 0.28);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -201,44 +220,10 @@ pre {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.35);
+  background: rgba(255, 255, 255, 0.18);
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.5);
-}
-
-/* ========================================================================== */
-/* ADMIN OVERRIDES (CRITICAL FIX)                                             */
-/* ========================================================================== */
-
-/*
-  Admin UI runs on dark surfaces.
-  These overrides PREVENT invisible text caused by global light tokens.
-*/
-
-[data-scope="admin"] {
-  --color-bg: #0b0e14;
-  --color-surface: #111520;
-  --color-surface-2: #161b2e;
-
-  --color-text: #e6e6eb;
-  --color-muted: rgba(230, 230, 235, 0.7);
-
-  --color-border: rgba(255, 255, 255, 0.08);
-}
-
-/* Hard safety: force readable text inside admin */
-[data-scope="admin"] h1,
-[data-scope="admin"] h2,
-[data-scope="admin"] h3,
-[data-scope="admin"] h4,
-[data-scope="admin"] h5,
-[data-scope="admin"] h6,
-[data-scope="admin"] p,
-[data-scope="admin"] span,
-[data-scope="admin"] label,
-[data-scope="admin"] li {
-  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.28);
 }

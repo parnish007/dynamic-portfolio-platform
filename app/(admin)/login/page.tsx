@@ -3,16 +3,37 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-
+import { createSupabaseServerClient } from "@/lib/supabase/client";
 
 export const metadata: Metadata = {
   title: "Admin Login",
   robots: { index: false, follow: false },
 };
 
+type AdminLoginPageProps = {
+  searchParams?: Record<string, string | string[] | undefined>;
+};
+
+function getNextPath(searchParams?: AdminLoginPageProps["searchParams"]): string {
+  const raw = searchParams?.next;
+
+  const next =
+    typeof raw === "string"
+      ? raw
+      : Array.isArray(raw)
+      ? raw[0]
+      : undefined;
+
+  // Safety: only allow internal redirects
+  if (!next) return "/admin/dashboard";
+  if (!next.startsWith("/")) return "/admin/dashboard";
+  if (next.startsWith("//")) return "/admin/dashboard";
+
+  return next;
+}
+
 // ============================================
-// Server Action: Login (FINAL)
+// Server Action: Login
 // ============================================
 
 async function loginAction(formData: FormData) {
@@ -21,12 +42,14 @@ async function loginAction(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
 
+  const next = String(formData.get("next") ?? "").trim();
+
   if (!email || !password) {
-    throw new Error("Email and password are required.");
+    // Keep it simple: redirect back with error query
+    redirect(`/admin/login?error=${encodeURIComponent("Email and password are required.")}`);
   }
 
   const supabase = createSupabaseServerClient();
-
 
   const { error } = await supabase.auth.signInWithPassword({
     email,
@@ -34,91 +57,103 @@ async function loginAction(formData: FormData) {
   });
 
   if (error) {
-    throw new Error(error.message);
+    redirect(`/admin/login?error=${encodeURIComponent(error.message)}&next=${encodeURIComponent(next || "/admin/dashboard")}`);
   }
 
-  // ✅ cookies are written correctly here
-  redirect("/dashboard");
+  // cookies are written by the Supabase server client
+  if (next && next.startsWith("/") && !next.startsWith("//")) {
+    redirect(next);
+  }
+
+  redirect("/admin/dashboard");
 }
 
-export default function AdminLoginPage() {
+export default function AdminLoginPage(props: AdminLoginPageProps) {
+  const next = getNextPath(props.searchParams);
+  const errorParam = props.searchParams?.error;
+  const error =
+    typeof errorParam === "string"
+      ? errorParam
+      : Array.isArray(errorParam)
+      ? errorParam[0]
+      : undefined;
+
   return (
     <main
+      className="admin"
+      data-scope="admin"
       style={{
         minHeight: "100vh",
         display: "grid",
         placeItems: "center",
-        background: "#0b0e14",
-        color: "#e6e6eb",
+        padding: "1.5rem",
       }}
     >
-      <form
-        action={loginAction}
-        style={{
-          width: 360,
-          padding: 24,
-          borderRadius: 12,
-          border: "1px solid rgba(255,255,255,0.08)",
-          background: "rgba(255,255,255,0.03)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 14,
-        }}
-      >
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-          Admin Login
-        </h1>
-
-        <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={{ fontSize: 13, opacity: 0.8 }}>Email</span>
-          <input
-            name="email"
-            type="email"
-            required
-            autoComplete="username"
-            style={inputStyle}
-          />
-        </label>
-
-        <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={{ fontSize: 13, opacity: 0.8 }}>Password</span>
-          <input
-            name="password"
-            type="password"
-            required
-            autoComplete="current-password"
-            style={inputStyle}
-          />
-        </label>
-
-        <button
-          type="submit"
-          style={{
-            marginTop: 6,
-            padding: "10px 14px",
-            borderRadius: 8,
-            border: "none",
-            background: "#4f7cff",
-            color: "#fff",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          Sign in
-        </button>
-
-        <p style={{ margin: 0, fontSize: 12, opacity: 0.65 }}>
+      <div className="adminCard" style={{ width: "100%", maxWidth: 420 }}>
+        <h1 className="adminCard__title">Admin Login</h1>
+        <p className="adminCard__desc">
           Authorized administrators only.
         </p>
-      </form>
+
+        {error ? (
+          <div
+            className="card"
+            style={{
+              marginTop: "1rem",
+              padding: "0.75rem",
+              borderColor: "rgba(239, 68, 68, 0.35)",
+              background: "rgba(239, 68, 68, 0.08)",
+            }}
+            role="alert"
+          >
+            <p style={{ margin: 0, color: "var(--color-text)" }}>{error}</p>
+          </div>
+        ) : null}
+
+        <form
+          action={loginAction}
+          style={{
+            marginTop: "1rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.75rem",
+          }}
+        >
+          <input type="hidden" name="next" value={next} />
+
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span className="text-sm" style={{ color: "var(--color-muted)" }}>
+              Email
+            </span>
+            <input
+              className="input"
+              name="email"
+              type="email"
+              required
+              autoComplete="username"
+              placeholder="you@example.com"
+            />
+          </label>
+
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span className="text-sm" style={{ color: "var(--color-muted)" }}>
+              Password
+            </span>
+            <input
+              className="input"
+              name="password"
+              type="password"
+              required
+              autoComplete="current-password"
+              placeholder="••••••••"
+            />
+          </label>
+
+          <button className="btn btn--primary" type="submit" style={{ marginTop: "0.25rem" }}>
+            Sign in
+          </button>
+        </form>
+      </div>
     </main>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 8,
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "rgba(0,0,0,0.35)",
-  color: "#e6e6eb",
-};

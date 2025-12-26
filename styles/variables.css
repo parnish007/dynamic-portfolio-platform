@@ -1,3 +1,5 @@
+/* styles/variables.css */
+
 /* ========================================================================== */
 /* DESIGN TOKENS / VARIABLES                                                  */
 /* ========================================================================== */
@@ -7,10 +9,17 @@
   - Used by globals.css, admin.css, utilities.css
   - Public + Admin safe
   - Easy theming (light / dark / admin)
+
+  CRITICAL FIX:
+  - Default theme MUST be readable out of the box.
+  - Default is DARK (most of your UI + bg already assume dark).
+  - Light theme is optional via [data-theme="light"].
+  - Admin theme via [data-scope="admin"] overrides a few tokens.
+  - Alias tokens (--bg, --text, etc.) added for compatibility across files.
 */
 
 /* -------------------------------------------------------------------------- */
-/* Default Theme (Public / Base)                                              */
+/* Default Theme (Public / Base) - DARK & READABLE                             */
 /* -------------------------------------------------------------------------- */
 
 :root {
@@ -18,50 +27,51 @@
   /* Brand                          */
   /* ============================== */
 
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-primary-soft: rgba(37, 99, 235, 0.15);
+  --color-primary: #7c3aed;
+  --color-primary-hover: #6d28d9;
+  --color-primary-soft: rgba(124, 58, 237, 0.18);
 
-  --color-secondary: #64748b;
-  --color-secondary-hover: #475569;
+  --color-secondary: #22c55e;
+  --color-secondary-hover: #16a34a;
 
   /* ============================== */
   /* Backgrounds / Surfaces         */
   /* ============================== */
 
-  --color-bg: #0b1220;
-  --color-surface: #ffffff;
-  --color-surface-2: #f8fafc;
-  --color-surface-3: #eef2ff;
+  --color-bg: #0b0f17;
+  --color-surface: #0f1623;
+  --color-surface-2: #121c2d;
+  --color-surface-3: #17233a;
 
   /* ============================== */
   /* Text                           */
   /* ============================== */
 
-  --color-text: #0f172a;
-  --color-text-inverse: #ffffff;
-  --color-muted: #64748b;
-  --color-muted-soft: rgba(100, 116, 139, 0.6);
+  --color-text: rgba(255, 255, 255, 0.92);
+  --color-text-inverse: #0b0f17;
+
+  --color-muted: rgba(255, 255, 255, 0.72);
+  --color-muted-soft: rgba(255, 255, 255, 0.58);
 
   /* ============================== */
   /* Borders                        */
   /* ============================== */
 
-  --color-border: rgba(2, 6, 23, 0.12);
-  --color-border-strong: rgba(2, 6, 23, 0.22);
+  --color-border: rgba(255, 255, 255, 0.10);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
 
   /* ============================== */
   /* Status                         */
   /* ============================== */
 
-  --color-success: #16a34a;
-  --color-success-soft: rgba(22, 163, 74, 0.15);
+  --color-success: #22c55e;
+  --color-success-soft: rgba(34, 197, 94, 0.18);
 
-  --color-warning: #d97706;
-  --color-warning-soft: rgba(217, 119, 6, 0.15);
+  --color-warning: #f59e0b;
+  --color-warning-soft: rgba(245, 158, 11, 0.18);
 
-  --color-danger: #dc2626;
-  --color-danger-soft: rgba(220, 38, 38, 0.15);
+  --color-danger: #ef4444;
+  --color-danger-soft: rgba(239, 68, 68, 0.18);
 
   /* ============================== */
   /* Typography                     */
@@ -81,6 +91,10 @@
   --text-2xl: 1.5rem;
   --text-3xl: 2rem;
 
+  /* Line heights (helps readability everywhere) */
+  --lh-tight: 1.15;
+  --lh-normal: 1.5;
+
   /* ============================== */
   /* Radius                         */
   /* ============================== */
@@ -96,10 +110,10 @@
   /* Shadows                        */
   /* ============================== */
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.12);
-  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.25);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.40);
+  --shadow-md: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 32px 90px rgba(0, 0, 0, 0.65);
 
   /* ============================== */
   /* Layout                         */
@@ -123,33 +137,68 @@
   --duration-fast: 120ms;
   --duration-normal: 180ms;
   --duration-slow: 280ms;
+
+  /* ============================== */
+  /* Focus                           */
+  /* ============================== */
+
+  --focus-ring: 0 0 0 3px rgba(124, 58, 237, 0.35);
+
+  /* ====================================================================== */
+  /* Compatibility Aliases (for older/newer CSS files)                       */
+  /* ====================================================================== */
+
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --surface-2: var(--color-surface-2);
+  --surface-3: var(--color-surface-3);
+
+  --text: var(--color-text);
+  --text-muted: var(--color-muted);
+
+  --border: 1px solid var(--color-border);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Dark Theme (Public)                                                        */
+/* Light Theme (Optional)                                                     */
+/* Use: <html data-theme="light">                                             */
+/* -------------------------------------------------------------------------- */
+
+[data-theme="light"] {
+  --color-bg: #ffffff;
+  --color-surface: #f7f8fb;
+  --color-surface-2: #eef2ff;
+  --color-surface-3: #eaf0ff;
+
+  --color-text: rgba(2, 6, 23, 0.92);
+  --color-text-inverse: #ffffff;
+
+  --color-muted: rgba(2, 6, 23, 0.68);
+  --color-muted-soft: rgba(2, 6, 23, 0.52);
+
+  --color-border: rgba(2, 6, 23, 0.12);
+  --color-border-strong: rgba(2, 6, 23, 0.18);
+
+  --shadow-xs: 0 1px 2px rgba(2, 6, 23, 0.06);
+  --shadow-sm: 0 2px 10px rgba(2, 6, 23, 0.08);
+  --shadow-md: 0 16px 40px rgba(2, 6, 23, 0.10);
+  --shadow-lg: 0 32px 90px rgba(2, 6, 23, 0.14);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Dark Theme (Optional override)                                             */
+/* Use: <html data-theme="dark">                                              */
+/* Note: default is already dark, so this is mostly explicitness.             */
 /* -------------------------------------------------------------------------- */
 
 [data-theme="dark"] {
-  --color-bg: #070b14;
-  --color-surface: #0b1220;
-  --color-surface-2: #0f172a;
-  --color-surface-3: #111827;
-
-  --color-text: rgba(255, 255, 255, 0.94);
-  --color-muted: rgba(255, 255, 255, 0.7);
-  --color-muted-soft: rgba(255, 255, 255, 0.5);
-
-  --color-border: rgba(255, 255, 255, 0.12);
-  --color-border-strong: rgba(255, 255, 255, 0.22);
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.45);
-  --shadow-md: 0 16px 36px rgba(0, 0, 0, 0.55);
-  --shadow-lg: 0 32px 90px rgba(0, 0, 0, 0.65);
+  /* keep defaults; intentionally empty unless you want to tweak */
 }
 
 /* -------------------------------------------------------------------------- */
 /* Admin Theme (CRITICAL FIX)                                                 */
+/* Apply admin scope on a wrapper element:                                    */
+/* <div data-scope="admin"> ... </div>                                        */
 /* -------------------------------------------------------------------------- */
 
 [data-scope="admin"] {
@@ -158,15 +207,15 @@
   --color-surface-2: #141a2a;
   --color-surface-3: #1b2235;
 
-  --color-text: #e6e6eb;
-  --color-muted: rgba(230, 230, 235, 0.7);
-  --color-muted-soft: rgba(230, 230, 235, 0.55);
+  --color-text: rgba(255, 255, 255, 0.92);
+  --color-muted: rgba(255, 255, 255, 0.70);
+  --color-muted-soft: rgba(255, 255, 255, 0.55);
 
-  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border: rgba(255, 255, 255, 0.10);
   --color-border-strong: rgba(255, 255, 255, 0.18);
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.6);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.7);
-  --shadow-md: 0 16px 36px rgba(0, 0, 0, 0.8);
-  --shadow-lg: 0 32px 90px rgba(0, 0, 0, 0.9);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.65);
+  --shadow-md: 0 16px 40px rgba(0, 0, 0, 0.80);
+  --shadow-lg: 0 32px 90px rgba(0, 0, 0, 0.90);
 }

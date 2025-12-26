@@ -1,3 +1,5 @@
+/* styles/components/navbar.css */
+
 /* ========================================================================== */
 /* NAVBAR COMPONENT                                                           */
 /* ========================================================================== */
@@ -7,7 +9,7 @@
   - Sticky + blur glass effect
   - High contrast text (no invisible links)
   - Responsive with mobile drawer
-  - Token-based theming
+  - Token-based theming (variables.css is source of truth)
 */
 
 /* -------------------------------------------------------------------------- */
@@ -15,7 +17,12 @@
 /* -------------------------------------------------------------------------- */
 
 .navbar {
-  --nav-bg: rgba(255, 255, 255, 0.82);
+  /*
+    Default navbar must match DEFAULT THEME.
+    Your project is now dark-by-default via variables.css.
+  */
+
+  --nav-bg: rgba(15, 22, 35, 0.78);
   --nav-border: var(--color-border);
   --nav-text: var(--color-text);
   --nav-muted: var(--color-muted);
@@ -35,10 +42,18 @@
 
 /* Transparent / hero overlay mode */
 .navbar--transparent {
-  --nav-bg: rgba(2, 6, 23, 0.45);
+  --nav-bg: rgba(2, 6, 23, 0.40);
   --nav-border: rgba(255, 255, 255, 0.12);
   --nav-text: rgba(255, 255, 255, 0.95);
   --nav-muted: rgba(255, 255, 255, 0.72);
+}
+
+/* Light theme support (optional) */
+[data-theme="light"] .navbar {
+  --nav-bg: rgba(255, 255, 255, 0.82);
+  --nav-border: rgba(2, 6, 23, 0.12);
+  --nav-text: rgba(2, 6, 23, 0.92);
+  --nav-muted: rgba(2, 6, 23, 0.68);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -57,7 +72,7 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Brand                                                                       */
+/* Brand                                                                      */
 /* -------------------------------------------------------------------------- */
 
 .navbar__brand {
@@ -66,10 +81,14 @@
   gap: 0.6rem;
 
   font-size: 0.95rem;
-  font-weight: 800;
+  font-weight: 900;
   letter-spacing: -0.02em;
 
   color: var(--nav-text);
+  text-decoration: none;
+}
+
+.navbar__brand:hover {
   text-decoration: none;
 }
 
@@ -78,17 +97,12 @@
   height: 2rem;
   border-radius: var(--radius-md);
 
-  background: linear-gradient(
-    135deg,
-    rgba(37, 99, 235, 0.95),
-    rgba(168, 85, 247, 0.95)
-  );
-
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.95), rgba(34, 197, 94, 0.85));
   box-shadow: var(--shadow-md);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Links                                                                       */
+/* Links                                                                      */
 /* -------------------------------------------------------------------------- */
 
 .navbar__links {
@@ -101,28 +115,35 @@
   position: relative;
 
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 700;
 
   color: var(--nav-text);
   text-decoration: none;
 
-  opacity: 0.9;
+  opacity: 0.92;
   padding: 0.45rem 0.55rem;
   border-radius: var(--radius-sm);
 
   transition:
-    opacity 0.15s ease,
-    background-color 0.15s ease,
-    color 0.15s ease;
+    opacity var(--duration-normal) var(--ease-standard),
+    background-color var(--duration-normal) var(--ease-standard),
+    color var(--duration-normal) var(--ease-standard);
 }
 
 .navbar__link:hover {
   opacity: 1;
+  background-color: rgba(255, 255, 255, 0.08);
+  text-decoration: none;
+}
+
+/* In light theme, use darker hover tint */
+[data-theme="light"] .navbar__link:hover {
   background-color: rgba(2, 6, 23, 0.06);
 }
 
-.navbar--transparent .navbar__link:hover {
-  background-color: rgba(255, 255, 255, 0.14);
+.navbar__link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .navbar__link--active {
@@ -132,8 +153,8 @@
 .navbar__link--active::after {
   content: "";
   position: absolute;
-  left: 0.5rem;
-  right: 0.5rem;
+  left: 0.55rem;
+  right: 0.55rem;
   bottom: -0.35rem;
 
   height: 2px;
@@ -142,7 +163,7 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Actions                                                                     */
+/* Actions                                                                    */
 /* -------------------------------------------------------------------------- */
 
 .navbar__actions {
@@ -173,11 +194,15 @@
   cursor: pointer;
 
   transition:
-    background-color 0.15s ease,
-    transform 0.1s ease;
+    background-color var(--duration-normal) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
 }
 
 .navbar__menu-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .navbar__menu-btn:hover {
   background-color: rgba(2, 6, 23, 0.06);
 }
 
@@ -187,7 +212,7 @@
 
 .navbar__menu-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+  box-shadow: var(--focus-ring);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -215,17 +240,6 @@
 /* Open state */
 .navbar__drawer--open {
   display: block;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Dark Theme                                                                 */
-/* -------------------------------------------------------------------------- */
-
-[data-theme="dark"] .navbar {
-  --nav-bg: rgba(11, 18, 32, 0.85);
-  --nav-border: rgba(255, 255, 255, 0.12);
-  --nav-text: rgba(255, 255, 255, 0.94);
-  --nav-muted: rgba(255, 255, 255, 0.7);
 }
 
 /* -------------------------------------------------------------------------- */
