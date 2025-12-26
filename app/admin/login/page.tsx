@@ -31,34 +31,8 @@ function getNextPath(searchParams?: AdminLoginPageProps["searchParams"]): string
   return next;
 }
 
-/**
- * DB schema confirmed:
- * public.admins(id uuid, email text, created_at timestamptz)
- *
- * ✅ Primary: admins.id = auth.user.id
- * ✅ Fallback: admins.user_id (older schema)
- */
-async function isAdminUser(args: {
-  supabase: ReturnType<typeof createSupabaseServerClient>;
-  userId: string;
-}): Promise<boolean> {
-  const byId = await args.supabase
-    .from("admins")
-    .select("id")
-    .eq("id", args.userId)
-    .maybeSingle();
-
-  if (!byId.error && byId.data?.id) return true;
-
-  const byUserId = await args.supabase
-    .from("admins")
-    .select("user_id")
-    .eq("user_id", args.userId)
-    .maybeSingle();
-
-  if (!byUserId.error && (byUserId.data as any)?.user_id) return true;
-
-  return false;
+function isProdEnv(): boolean {
+  return (process.env.NODE_ENV ?? "").toLowerCase() === "production";
 }
 
 async function loginAction(formData: FormData) {
@@ -83,12 +57,12 @@ async function loginAction(formData: FormData) {
 
   const supabase = createSupabaseServerClient();
 
-  const { error } = await supabase.auth.signInWithPassword({
+  const { error: signInErr } = await supabase.auth.signInWithPassword({
     email,
     password,
   });
 
-  if (error) {
+  if (signInErr) {
     redirect(
       `/admin/login?error=${encodeURIComponent(
         "Invalid credentials."
@@ -96,10 +70,14 @@ async function loginAction(formData: FormData) {
     );
   }
 
-  const { data: userRes } = await supabase.auth.getUser();
+  // ✅ Helps ensure SSR cookie refresh runs in this request
+  // (non-breaking, safe)
+  await supabase.auth.getSession();
+
+  const { data: userRes, error: userErr } = await supabase.auth.getUser();
   const user = userRes?.user;
 
-  if (!user) {
+  if (userErr || !user) {
     await supabase.auth.signOut();
     redirect(
       `/admin/login?error=${encodeURIComponent(
@@ -108,9 +86,24 @@ async function loginAction(formData: FormData) {
     );
   }
 
-  const okAdmin = await isAdminUser({ supabase, userId: user.id });
+  // ✅ Admin check via SECURITY DEFINER SQL function (bypasses RLS on admins table)
+  const { data: isAdmin, error: isAdminErr } = await supabase.rpc("is_admin");
 
-  if (!okAdmin) {
+  if (isAdminErr) {
+    await supabase.auth.signOut();
+
+    const msg = isProdEnv()
+      ? "Access denied. Admins only."
+      : `Admin check failed: ${isAdminErr.message}`;
+
+    redirect(
+      `/admin/login?error=${encodeURIComponent(msg)}&next=${encodeURIComponent(
+        safeNext
+      )}`
+    );
+  }
+
+  if (!isAdmin) {
     await supabase.auth.signOut();
     redirect(
       `/admin/login?error=${encodeURIComponent(
@@ -174,7 +167,13 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
         >
           <input type="hidden" name="next" value={next} />
 
-          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.35rem",
+            }}
+          >
             <span className="text-sm" style={{ color: "var(--color-muted)" }}>
               Email
             </span>
@@ -188,7 +187,13 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
             />
           </label>
 
-          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.35rem",
+            }}
+          >
             <span className="text-sm" style={{ color: "var(--color-muted)" }}>
               Password
             </span>
@@ -202,7 +207,11 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
             />
           </label>
 
-          <button className="btn btn--primary" type="submit" style={{ marginTop: "0.25rem" }}>
+          <button
+            className="btn btn--primary"
+            type="submit"
+            style={{ marginTop: "0.25rem" }}
+          >
             Sign in
           </button>
         </form>

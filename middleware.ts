@@ -93,10 +93,12 @@ function extractOkFromMePayload(payload: unknown): boolean {
 
   const p = payload as Record<string, unknown>;
 
+  // ✅ Strict: accept only explicit signals
   if (p.ok === true) return true;
-  if (typeof p.authenticated === "boolean") return p.authenticated;
-  if (p.user && typeof p.user === "object") return true;
+  if (p.authenticated === true) return true;
 
+  // ❌ Do not infer auth from presence of "user" object
+  // This prevents accidental access if API shape changes.
   return false;
 }
 

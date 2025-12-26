@@ -88,14 +88,14 @@ function allowRequest(args: {
 }
 
 /**
- * Admin protection (aligned with your platform requirements):
+ * Admin protection:
  * - Primary: session-based auth via /api/auth/me (Supabase cookies)
  * - Optional override: if ADMIN_API_SECRET is set, allow x-admin-api-secret too
  */
 async function isAdminAuthorized(request: Request): Promise<boolean> {
   const secret = process.env.ADMIN_API_SECRET;
 
-  // Optional header-secret override (useful for scripts/automation)
+  // Optional header-secret override
   if (isNonEmptyString(secret)) {
     const header = request.headers.get("x-admin-api-secret");
     if (isNonEmptyString(header) && header.trim() === secret.trim()) {
@@ -103,7 +103,6 @@ async function isAdminAuthorized(request: Request): Promise<boolean> {
     }
   }
 
-  // Session-based auth using cookies (required for real admin usage)
   try {
     const cookie = request.headers.get("cookie") ?? "";
     if (!cookie) return false;
@@ -113,21 +112,17 @@ async function isAdminAuthorized(request: Request): Promise<boolean> {
 
     const res = await fetch(meUrl, {
       method: "GET",
-      headers: {
-        cookie,
-      },
+      headers: { cookie },
       cache: "no-store",
     });
 
     if (!res.ok) return false;
 
     const data: unknown = await res.json();
-
     if (!isPlainObject(data)) return false;
 
     const ok = data.ok === true;
-    const authenticated =
-      typeof data.authenticated === "boolean" ? data.authenticated : false;
+    const authenticated = typeof data.authenticated === "boolean" ? data.authenticated : false;
 
     return Boolean(ok && authenticated);
   } catch {
@@ -136,24 +131,14 @@ async function isAdminAuthorized(request: Request): Promise<boolean> {
 }
 
 function getSupabaseBaseUrl(): string | null {
-  const url =
-    process.env.SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    "";
-
+  const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   if (!isNonEmptyString(url)) return null;
-
   return String(url).trim().replace(/\/$/, "");
 }
 
 function getAnonKey(): string | null {
-  const key =
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    "";
-
+  const key = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
   if (!isNonEmptyString(key)) return null;
-
   return String(key).trim();
 }
 
@@ -212,9 +197,12 @@ function getSettingsRowKey(): { keyColumn: string; keyValue: string; conflict: s
     ? String(process.env.SUPABASE_SETTINGS_KEY_COLUMN).trim()
     : "key";
 
+  // IMPORTANT:
+  // Your migration seeds: key = 'site'
+  // So default should be 'site' (unless env overrides it)
   const keyValue = isNonEmptyString(process.env.SUPABASE_SETTINGS_KEY_VALUE)
     ? String(process.env.SUPABASE_SETTINGS_KEY_VALUE).trim()
-    : "global";
+    : "site";
 
   const conflict = isNonEmptyString(process.env.SUPABASE_SETTINGS_CONFLICT_TARGET)
     ? String(process.env.SUPABASE_SETTINGS_CONFLICT_TARGET).trim()
@@ -223,8 +211,13 @@ function getSettingsRowKey(): { keyColumn: string; keyValue: string; conflict: s
   return { keyColumn, keyValue, conflict };
 }
 
+/**
+ * Settings row extraction (matches your migration):
+ * - primary: row.value (jsonb)
+ * - fallback: row.data / row.settings (for older experiments)
+ */
 function extractSettingsObject(row: Record<string, unknown>): Record<string, unknown> | null {
-  const maybe = row.data ?? row.settings ?? row.value;
+  const maybe = row.value ?? row.data ?? row.settings;
   if (isPlainObject(maybe)) return maybe as Record<string, unknown>;
   return null;
 }
@@ -373,13 +366,26 @@ export async function GET(request: Request): Promise<Response> {
   const { keyColumn, keyValue } = getSettingsRowKey();
 
   try {
-    const row = await postgrestSelectOne({
+    // First try configured/default key
+    let row = await postgrestSelectOne({
       supabaseUrl,
       supabaseKey: anonKey,
       table,
-      select: "*",
+      select: "key,value,updated_at",
       filters: [{ key: keyColumn, value: `eq.${keyValue}` }],
     });
+
+    // Backward compatibility:
+    // If someone previously used "global", try it too if first missing
+    if (!row && keyValue !== "global") {
+      row = await postgrestSelectOne({
+        supabaseUrl,
+        supabaseKey: anonKey,
+        table,
+        select: "key,value,updated_at",
+        filters: [{ key: keyColumn, value: "eq.global" }],
+      }).catch(() => null);
+    }
 
     if (!row) {
       const payload: ApiOkGet = {
@@ -441,7 +447,7 @@ export async function PATCH(request: Request): Promise<Response> {
     return jsonErr(
       "Missing Supabase configuration.",
       500,
-      "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable settings updates.",
+      "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable settings updates."
     );
   }
 
@@ -470,7 +476,7 @@ export async function PATCH(request: Request): Promise<Response> {
       supabaseUrl,
       supabaseKey: serviceRoleKey,
       table,
-      select: "*",
+      select: "key,value,updated_at",
       filters: [{ key: keyColumn, value: `eq.${keyValue}` }],
     });
 
@@ -482,10 +488,11 @@ export async function PATCH(request: Request): Promise<Response> {
 
   const merged = deepMergeObjects(current, patch as Record<string, unknown>);
 
+  // IMPORTANT FIX:
+  // Your table stores settings in column "value" (jsonb), not "data".
   const payloadRow: Record<string, unknown> = {
     [keyColumn]: keyValue,
-    data: merged,
-    updated_at: new Date().toISOString(),
+    value: merged,
   };
 
   try {
@@ -495,7 +502,7 @@ export async function PATCH(request: Request): Promise<Response> {
       table,
       payload: payloadRow,
       conflictTarget: conflict,
-      select: "*",
+      select: "key,value,updated_at",
     });
 
     const updatedAt = saved ? extractUpdatedAt(saved) : null;
@@ -503,7 +510,7 @@ export async function PATCH(request: Request): Promise<Response> {
     const response: ApiOkPatch = {
       ok: true,
       settings: merged,
-      updatedAt: isNonEmptyString(updatedAt) ? updatedAt : String(payloadRow.updated_at),
+      updatedAt: isNonEmptyString(updatedAt) ? updatedAt : new Date().toISOString(),
     };
 
     return NextResponse.json(response, { status: 200, headers: { "Cache-Control": "no-store" } });

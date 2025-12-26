@@ -1,5 +1,3 @@
-// components/admin/ContentTree.tsx
-
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -63,6 +61,14 @@ function pickString(obj: Record<string, unknown>, keys: string[]): string | null
     if (s) return s;
   }
   return null;
+}
+
+function slugify(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
 }
 
 function buildTree(nodes: ContentNode[]): TreeNode[] {
@@ -175,8 +181,6 @@ export default function ContentTree() {
   const tree = useMemo(() => buildTree(nodes), [nodes]);
   const flat = useMemo(() => flattenTree(tree), [tree]);
 
-  const selectedIsFolder = selected?.node_type === "folder";
-
   const folderOptions = useMemo(() => {
     const folders = nodes
       .filter((n) => n.node_type === "folder")
@@ -186,10 +190,42 @@ export default function ContentTree() {
     return folders;
   }, [nodes]);
 
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function isExpanded(id: string): boolean {
+    return expanded[id] ?? true;
+  }
+
+  function parentChainHidden(node: ContentNode): boolean {
+    let pid = node.parent_id;
+
+    while (pid) {
+      if (!isExpanded(pid)) return true;
+      const parent = nodes.find((n) => n.id === pid);
+      pid = parent?.parent_id ?? null;
+    }
+
+    return false;
+  }
+
   function selectedHasChildren(): boolean {
     if (!selected) return false;
     return nodes.some((n) => n.parent_id === selected.id);
   }
+
+  /**
+   * File-manager behavior:
+   * - If selected is folder => current folder is selected.id
+   * - If selected is item => current folder is selected.parent_id (directory)
+   * - If nothing selected => root (null)
+   */
+  const currentFolderId = useMemo(() => {
+    if (!selected) return null;
+    if (selected.node_type === "folder") return selected.id;
+    return selected.parent_id ?? null;
+  }, [selected]);
 
   async function load() {
     try {
@@ -224,26 +260,6 @@ export default function ContentTree() {
     void load();
   }, []);
 
-  function toggleExpanded(id: string) {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  }
-
-  function isExpanded(id: string): boolean {
-    return expanded[id] ?? true;
-  }
-
-  function parentChainHidden(node: ContentNode): boolean {
-    let pid = node.parent_id;
-
-    while (pid) {
-      if (!isExpanded(pid)) return true;
-      const parent = nodes.find((n) => n.id === pid);
-      pid = parent?.parent_id ?? null;
-    }
-
-    return false;
-  }
-
   async function patchNode(nodeId: string, patch: Record<string, unknown>) {
     const res = await fetch(`/api/admin/content-nodes/${encodeURIComponent(nodeId)}`, {
       method: "PATCH",
@@ -267,21 +283,23 @@ export default function ContentTree() {
   }
 
   async function createFolder() {
-    const title = prompt("Folder name?");
+    const titleRaw = window.prompt("Folder name?");
+    if (!titleRaw) return;
+
+    const title = titleRaw.trim();
     if (!title) return;
 
     try {
       setError(null);
 
-      const parentId = selected?.node_type === "folder" ? selected.id : selected?.parent_id ?? null;
-
       const res = await fetch("/api/admin/content-nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: title.trim(),
-          nodeType: "folder",
-          parentId,
+          title,
+          node_type: "folder",
+          parent_id: currentFolderId,
+          order_index: 0,
         }),
       });
 
@@ -305,14 +323,19 @@ export default function ContentTree() {
     }
   }
 
-  async function createBlogInFolder() {
-    if (!selected || selected.node_type !== "folder") {
-      setError("Select a folder first, then click + Blog.");
+  async function createBlogInCurrentFolder() {
+    if (!currentFolderId) {
+      setError("Select a folder (or an item inside a folder) before creating a blog.");
       return;
     }
 
-    const title = prompt("Blog title?");
+    const titleRaw = window.prompt("Blog title?");
+    if (!titleRaw) return;
+
+    const title = titleRaw.trim();
     if (!title) return;
+
+    const slug = slugify(window.prompt("Blog slug? (optional)", slugify(title)) ?? slugify(title));
 
     try {
       setCreatingBlog(true);
@@ -322,7 +345,8 @@ export default function ContentTree() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: title.trim(),
+          title,
+          slug,
           is_published: false,
         }),
       });
@@ -347,18 +371,19 @@ export default function ContentTree() {
         return;
       }
 
-      const blogTitle = pickString(createdBlog, ["title", "name"]) ?? title.trim();
-      const blogSlug = pickString(createdBlog, ["slug"]);
+      const blogTitle = pickString(createdBlog, ["title", "name"]) ?? title;
+      const blogSlug = pickString(createdBlog, ["slug"]) ?? slug;
 
       const nodeRes = await fetch("/api/admin/content-nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: blogTitle,
-          nodeType: "blog",
-          parentId: selected.id,
-          refId: blogId,
-          slug: blogSlug ?? null,
+          node_type: "blog",
+          parent_id: currentFolderId,
+          ref_id: blogId,
+          slug: blogSlug,
+          order_index: 0,
         }),
       });
 
@@ -384,14 +409,21 @@ export default function ContentTree() {
     }
   }
 
-  async function createProjectInFolder() {
-    if (!selected || selected.node_type !== "folder") {
-      setError("Select a folder first, then click + Project.");
+  async function createProjectInCurrentFolder() {
+    if (!currentFolderId) {
+      setError("Select a folder (or an item inside a folder) before creating a project.");
       return;
     }
 
-    const title = prompt("Project title?");
+    const titleRaw = window.prompt("Project title?");
+    if (!titleRaw) return;
+
+    const title = titleRaw.trim();
     if (!title) return;
+
+    const slug = slugify(
+      window.prompt("Project slug? (optional)", slugify(title)) ?? slugify(title)
+    );
 
     let createdProjectId: string | null = null;
 
@@ -403,7 +435,8 @@ export default function ContentTree() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: title.trim(),
+          title,
+          slug,
           is_published: false,
           is_featured: false,
         }),
@@ -431,18 +464,19 @@ export default function ContentTree() {
 
       createdProjectId = projectId;
 
-      const projectTitle = pickString(createdProject, ["title", "name"]) ?? title.trim();
-      const projectSlug = pickString(createdProject, ["slug"]);
+      const projectTitle = pickString(createdProject, ["title", "name"]) ?? title;
+      const projectSlug = pickString(createdProject, ["slug"]) ?? slug;
 
       const nodeRes = await fetch("/api/admin/content-nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: projectTitle,
-          nodeType: "project",
-          parentId: selected.id,
-          refId: projectId,
-          slug: projectSlug ?? null,
+          node_type: "project",
+          parent_id: currentFolderId,
+          ref_id: projectId,
+          slug: projectSlug,
+          order_index: 0,
         }),
       });
 
@@ -451,7 +485,7 @@ export default function ContentTree() {
       if (!nodeRes.ok) {
         const msg =
           isPlainObject(nodeData) && (nodeData as ApiErr).ok === false
-            ? (data as ApiErr).error
+            ? (nodeData as ApiErr).error
             : `Create node failed (${nodeRes.status})`;
 
         if (createdProjectId) {
@@ -483,7 +517,7 @@ export default function ContentTree() {
   async function renameSelected() {
     if (!selected) return;
 
-    const nextTitle = prompt("New name", selected.title);
+    const nextTitle = window.prompt("New name", selected.title);
     if (nextTitle === null) return;
 
     const title = nextTitle.trim();
@@ -511,7 +545,7 @@ export default function ContentTree() {
       setMoving(true);
       setError(null);
 
-      const updated = await patchNode(selected.id, { parentId: nextParentId });
+      const updated = await patchNode(selected.id, { parent_id: nextParentId });
 
       setNodes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
     } catch (e) {
@@ -545,8 +579,8 @@ export default function ContentTree() {
       const aIndex = typeof a.order_index === "number" ? a.order_index : 0;
       const bIndex = typeof b.order_index === "number" ? b.order_index : 0;
 
-      const updatedA = await patchNode(a.id, { orderIndex: bIndex });
-      const updatedB = await patchNode(b.id, { orderIndex: aIndex });
+      const updatedA = await patchNode(a.id, { order_index: bIndex });
+      const updatedB = await patchNode(b.id, { order_index: aIndex });
 
       setNodes((prev) =>
         prev.map((n) => {
@@ -637,7 +671,7 @@ export default function ContentTree() {
           <div>
             <p style={{ margin: 0, fontWeight: 800 }}>Tree</p>
             <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
-              Folders can contain folders + items.
+              Select a folder (or an item inside it). New items are created in the current folder.
             </p>
           </div>
 
@@ -653,9 +687,9 @@ export default function ContentTree() {
             <button
               className="btn"
               type="button"
-              onClick={() => void createBlogInFolder()}
-              disabled={creatingBlog || !selectedIsFolder}
-              title={!selectedIsFolder ? "Select a folder first" : "Create a blog under the selected folder"}
+              onClick={() => void createBlogInCurrentFolder()}
+              disabled={creatingBlog || !currentFolderId}
+              title={!currentFolderId ? "Select a folder first" : "Create a blog in current folder"}
             >
               {creatingBlog ? "Creating…" : "+ Blog"}
             </button>
@@ -663,9 +697,9 @@ export default function ContentTree() {
             <button
               className="btn"
               type="button"
-              onClick={() => void createProjectInFolder()}
-              disabled={creatingProject || !selectedIsFolder}
-              title={!selectedIsFolder ? "Select a folder first" : "Create a project under the selected folder"}
+              onClick={() => void createProjectInCurrentFolder()}
+              disabled={creatingProject || !currentFolderId}
+              title={!currentFolderId ? "Select a folder first" : "Create a project in current folder"}
             >
               {creatingProject ? "Creating…" : "+ Project"}
             </button>
@@ -794,13 +828,7 @@ export default function ContentTree() {
               <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>Move</p>
 
               <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => void moveSelected(null)}
-                  disabled={moving}
-                  title="Move to root"
-                >
+                <button className="btn" type="button" onClick={() => void moveSelected(null)} disabled={moving}>
                   {moving ? "Moving…" : "To root"}
                 </button>
 
@@ -813,7 +841,6 @@ export default function ContentTree() {
                   }}
                   disabled={moving}
                   style={{ minWidth: 180 }}
-                  title="Move into a folder"
                 >
                   <option value="">(root)</option>
                   {folderOptions
@@ -825,38 +852,20 @@ export default function ContentTree() {
                     ))}
                 </select>
               </div>
-
-              <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
-                Moving folders into their descendants is blocked by the API.
-              </p>
             </div>
 
             <div style={{ display: "grid", gap: "var(--space-2)" }}>
               <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>Reorder</p>
 
               <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => void reorderSelected("up")}
-                  disabled={reordering}
-                >
+                <button className="btn" type="button" onClick={() => void reorderSelected("up")} disabled={reordering}>
                   {reordering ? "…" : "↑ Up"}
                 </button>
 
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => void reorderSelected("down")}
-                  disabled={reordering}
-                >
+                <button className="btn" type="button" onClick={() => void reorderSelected("down")} disabled={reordering}>
                   {reordering ? "…" : "↓ Down"}
                 </button>
               </div>
-
-              <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
-                This swaps <code>order_index</code> with the nearest sibling.
-              </p>
             </div>
 
             <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>

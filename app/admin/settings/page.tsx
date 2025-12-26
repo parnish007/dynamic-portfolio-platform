@@ -1,5 +1,7 @@
 // app/(admin)/settings/page.tsx
+
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 
 type ApiErr = { ok: false; error: string; details?: string };
 
@@ -28,19 +30,56 @@ function formatDate(value: unknown): string {
 async function safeJson<T>(res: Response): Promise<T | ApiErr> {
   try {
     const data: unknown = await res.json();
+
     if (isPlainObject(data) && data.ok === false && typeof data.error === "string") {
       return data as ApiErr;
     }
+
     return data as T;
   } catch {
     return { ok: false, error: "Invalid JSON response." };
   }
 }
 
+function getBaseUrlFromHeaders(): string {
+  const h = headers();
+
+  // Works on localhost + prod
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
+  const proto = h.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
+
+  return `${proto}://${host}`;
+}
+
 async function getSettings(): Promise<SettingsOk | ApiErr> {
   try {
-    const res = await fetch("/api/settings", { cache: "no-store" });
-    return await safeJson<SettingsOk>(res);
+    const h = headers();
+    const baseUrl = getBaseUrlFromHeaders();
+
+    const res = await fetch(`${baseUrl}/api/settings`, {
+      cache: "no-store",
+      headers: {
+        // Forward cookies to keep consistent auth/session behavior
+        cookie: h.get("cookie") ?? "",
+      },
+    });
+
+    // Try to parse JSON body even on non-2xx (your API returns JSON errors)
+    const data = await safeJson<SettingsOk>(res);
+
+    if (!res.ok) {
+      const msg =
+        isPlainObject(data) && (data as ApiErr).ok === false
+          ? (data as ApiErr).error
+          : `Request failed (${res.status})`;
+
+      const details =
+        isPlainObject(data) && (data as ApiErr).ok === false ? (data as ApiErr).details : undefined;
+
+      return { ok: false, error: msg, details };
+    }
+
+    return data as SettingsOk;
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error.";
     return { ok: false, error: "Failed to load settings.", details: msg };
@@ -57,8 +96,8 @@ export const metadata: Metadata = {
  * -----------------------------
  * - Read-only overview for now
  * - Fully data-driven via /api/settings
- * - No hardcoded content
- * - Write operations will be added later via PATCH
+ * - Absolute SSR fetch + cookies forwarded (stable in dev/prod)
+ * - PATCH editor UI will be added next
  */
 export default async function AdminSettingsPage() {
   const res = await getSettings();
@@ -116,13 +155,28 @@ export default async function AdminSettingsPage() {
                   lineHeight: 1.5,
                 }}
               >
-{JSON.stringify(data.settings, null, 2)}
+                {JSON.stringify(data.settings, null, 2)}
               </pre>
             </details>
           </>
         ) : (
           <div style={{ color: "#ff6b6b" }}>
-            Failed to load settings from <code>/api/settings</code>.
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>
+              Failed to load settings from <code>/api/settings</code>.
+            </div>
+
+            {isPlainObject(res) && (res as ApiErr).ok === false ? (
+              <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.5 }}>
+                <div>
+                  <strong>Error:</strong> {(res as ApiErr).error}
+                </div>
+                {(res as ApiErr).details ? (
+                  <div style={{ marginTop: 6 }}>
+                    <strong>Details:</strong> {(res as ApiErr).details}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         )}
       </div>

@@ -11,6 +11,10 @@ type CookieToSet = {
   options: CookieOptions;
 };
 
+function isProdEnv(): boolean {
+  return (process.env.NODE_ENV ?? "").toLowerCase() === "production";
+}
+
 export function createSupabaseServerClient() {
   const cookieStore = cookies();
 
@@ -36,13 +40,24 @@ export function createSupabaseServerClient() {
       // Supabase SSR uses setAll() to refresh session cookies
       setAll(cookiesToSet: CookieToSet[]) {
         try {
+          const isProd = isProdEnv();
+
           cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options);
+            cookieStore.set(name, value, {
+              ...options,
+
+              // ✅ Ensure cookies are available site-wide
+              path: options?.path ?? "/",
+
+              // ✅ CRITICAL: secure cookies do NOT work on http://localhost
+              // In production (https), keep secure behavior.
+              secure: isProd ? (options as any)?.secure ?? true : false,
+            });
           });
         } catch (err) {
           // In some contexts (certain server components), cookie writes are not allowed.
           // Route handlers & server actions should still be fine.
-          if (process.env.NODE_ENV !== "production") {
+          if (!isProdEnv()) {
             console.warn(
               "[supabase/server] setAll() failed (non-fatal). If this happens in a Route Handler, auth may not persist.",
               err

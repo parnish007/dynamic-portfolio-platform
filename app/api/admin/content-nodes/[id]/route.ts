@@ -27,6 +27,7 @@ function isValidNodeType(value: unknown): value is NodeType {
 }
 
 function cleanNullableString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
   const s = value.trim();
   return s ? s : null;
@@ -44,29 +45,30 @@ function asNumber(value: unknown, fallback: number) {
 }
 
 // ---------------------------------------------
-// Admin Guard (safe, minimal, non-breaking)
-// - Supports BOTH schemas:
-//   A) admins.user_id = auth.users.id   (recommended)
-//   B) admins.id      = auth.users.id   (legacy)
+// Admin Guard (robust)
+// 1) Prefer RPC public.is_admin() if available
+// 2) Fallback to admins.id == auth.uid()
 // ---------------------------------------------
-async function requireAdmin(
-  supabase: ReturnType<typeof createSupabaseServerClient>
-) {
+async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClient>) {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
   if (userErr || !userRes.user) {
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
+  // 1) RPC
+  try {
+    const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
+    if (!rpcErr && typeof isAdmin === "boolean") {
+      if (isAdmin) return { ok: true as const };
+      return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
+    }
+  } catch {
+    // ignore -> fallback
+  }
+
+  // 2) Fallback
   const userId = userRes.user.id;
-
-  const { data: byUserId, error: e1 } = await supabase
-    .from("admins")
-    .select("user_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!e1 && byUserId) return { ok: true as const };
 
   const { data: byId, error: e2 } = await supabase
     .from("admins")
@@ -85,6 +87,54 @@ async function requireAdmin(
   return { ok: true as const };
 }
 
+async function getNode(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  nodeId: string
+): Promise<{ ok: true; node: { id: string; parent_id: string | null; node_type: NodeType; ref_id: string | null } } | { ok: false; status: number; error: string }> {
+  const { data, error } = await supabase
+    .from("content_nodes")
+    .select("id,parent_id,node_type,ref_id")
+    .eq("id", nodeId)
+    .maybeSingle();
+
+  if (error) return { ok: false as const, status: 500, error: error.message };
+  if (!data) return { ok: false as const, status: 404, error: "NOT_FOUND" };
+
+  const nt = data.node_type;
+  const node_type: NodeType = isValidNodeType(nt) ? nt : "folder";
+
+  return {
+    ok: true as const,
+    node: {
+      id: data.id as string,
+      parent_id: (data.parent_id as string | null) ?? null,
+      node_type,
+      ref_id: (data.ref_id as string | null) ?? null,
+    },
+  };
+}
+
+async function ensureParentIsFolderIfSet(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  parentId: string
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const { data, error } = await supabase
+    .from("content_nodes")
+    .select("id,node_type")
+    .eq("id", parentId)
+    .maybeSingle();
+
+  if (error) return { ok: false as const, status: 500, error: error.message };
+  if (!data) return { ok: false as const, status: 400, error: "PARENT_NOT_FOUND" };
+
+  const nt = data.node_type;
+  if (nt !== "folder") {
+    return { ok: false as const, status: 400, error: "PARENT_MUST_BE_FOLDER" };
+  }
+
+  return { ok: true as const };
+}
+
 async function isDescendant(
   supabase: ReturnType<typeof createSupabaseServerClient>,
   nodeId: string,
@@ -96,10 +146,9 @@ async function isDescendant(
 
   while (current) {
     guard += 1;
-    if (guard > 200) {
-      // cycle/insane depth guard
-      return true;
-    }
+
+    // hard stop: prevents infinite loops / insane depth
+    if (guard > 300) return true;
 
     if (current === nodeId) return true;
 
@@ -110,15 +159,24 @@ async function isDescendant(
       .maybeSingle();
 
     if (error) return true;
+
     current = (data?.parent_id as string | null) ?? null;
   }
 
   return false;
 }
 
+function requiresRefId(nodeType: NodeType): boolean {
+  return nodeType === "blog" || nodeType === "project";
+}
+
 // =============================================
 // PATCH → Update node (rename / move / reorder / link)
 // Accept both snake_case and camelCase payloads.
+// File-manager rules:
+// - parent must be folder (if not null)
+// - cannot move into itself/descendant
+// - if node_type becomes blog/project => ref_id required
 // =============================================
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -129,6 +187,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) return json(admin.status, { ok: false, error: admin.error });
+
+    const currentRes = await getNode(supabase, nodeId);
+    if (!currentRes.ok) return json(currentRes.status, { ok: false, error: currentRes.error });
 
     let body: unknown = null;
     try {
@@ -151,48 +212,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       update.title = title;
     }
 
-    // Parent (move): accept parent_id OR parentId
-    let nextParentId: string | null | undefined = undefined;
-    if ("parent_id" in b || "parentId" in b) {
-      const raw = (b as any).parent_id ?? (b as any).parentId ?? null;
-
-      if (raw === null) nextParentId = null;
-      else nextParentId = cleanNullableString(raw);
-
-      // prevent parent === self
-      if (nextParentId && nextParentId === nodeId) {
-        return json(400, { ok: false, error: "PARENT_CANNOT_BE_SELF" });
-      }
-
-      // prevent cycles (moving under a descendant)
-      if (nextParentId) {
-        const bad = await isDescendant(supabase, nodeId, nextParentId);
-        if (bad) {
-          return json(400, { ok: false, error: "PARENT_CANNOT_BE_DESCENDANT" });
-        }
-      }
-
-      update.parent_id = nextParentId;
-    }
-
     // Slug
     if ("slug" in b) {
       update.slug = cleanNullableString((b as any).slug);
-    }
-
-    // Order (reorder): accept order_index OR orderIndex (number or numeric string)
-    if ("order_index" in b || "orderIndex" in b) {
-      const raw = (b as any).order_index ?? (b as any).orderIndex;
-
-      if (raw === null || raw === undefined) {
-        // ignore
-      } else {
-        const n = asNumber(raw, Number.NaN);
-        if (!Number.isFinite(n)) {
-          return json(400, { ok: false, error: "ORDER_INDEX_INVALID" });
-        }
-        update.order_index = n;
-      }
     }
 
     // Icon
@@ -205,25 +227,74 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       update.description = cleanNullableString((b as any).description);
     }
 
-    // Ref link (node -> real record): accept ref_id OR refId
+    // Order index
+    if ("order_index" in b || "orderIndex" in b) {
+      const raw = (b as any).order_index ?? (b as any).orderIndex;
+
+      if (raw !== null && raw !== undefined) {
+        const n = asNumber(raw, Number.NaN);
+        if (!Number.isFinite(n)) {
+          return json(400, { ok: false, error: "ORDER_INDEX_INVALID" });
+        }
+        update.order_index = n;
+      }
+    }
+
+    // Parent (move): accept parent_id OR parentId
+    if ("parent_id" in b || "parentId" in b) {
+      const raw = (b as any).parent_id ?? (b as any).parentId ?? null;
+
+      const nextParentId = raw === null ? null : cleanNullableString(raw);
+
+      if (nextParentId && nextParentId === nodeId) {
+        return json(400, { ok: false, error: "PARENT_CANNOT_BE_SELF" });
+      }
+
+      if (nextParentId) {
+        // parent must be folder
+        const parentOk = await ensureParentIsFolderIfSet(supabase, nextParentId);
+        if (!parentOk.ok) return json(parentOk.status, { ok: false, error: parentOk.error });
+
+        // prevent cycles
+        const bad = await isDescendant(supabase, nodeId, nextParentId);
+        if (bad) return json(400, { ok: false, error: "PARENT_CANNOT_BE_DESCENDANT" });
+      }
+
+      update.parent_id = nextParentId;
+    }
+
+    // Ref link: accept ref_id OR refId
     if ("ref_id" in b || "refId" in b) {
       const raw = (b as any).ref_id ?? (b as any).refId ?? null;
       update.ref_id = raw === null ? null : cleanNullableString(raw);
     }
 
-    // Node type (folder/section/project/blog): accept node_type OR nodeType
+    // Node type: accept node_type OR nodeType
     if ("node_type" in b || "nodeType" in b) {
       const raw = (b as any).node_type ?? (b as any).nodeType;
 
-      if (raw === null || raw === undefined) {
-        // ignore
-      } else if (!isValidNodeType(raw)) {
-        return json(400, { ok: false, error: "NODE_TYPE_INVALID" });
-      } else {
+      if (raw !== null && raw !== undefined) {
+        if (!isValidNodeType(raw)) {
+          return json(400, { ok: false, error: "NODE_TYPE_INVALID" });
+        }
         update.node_type = raw;
       }
     }
 
+    // Validate node_type <-> ref_id constraint
+    const nextType: NodeType =
+      (typeof update.node_type === "string" && isValidNodeType(update.node_type)
+        ? update.node_type
+        : currentRes.node.node_type) as NodeType;
+
+    const nextRefId =
+      "ref_id" in update ? (update.ref_id as string | null) : currentRes.node.ref_id;
+
+    if (requiresRefId(nextType) && !nextRefId) {
+      return json(400, { ok: false, error: "REF_ID_REQUIRED" });
+    }
+
+    // Optional: enforce parent folder for ALL nodes when moving (done above).
     if (Object.keys(update).length === 0) {
       return json(400, { ok: false, error: "NO_FIELDS_TO_UPDATE" });
     }
@@ -238,10 +309,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .maybeSingle();
 
     if (error) return json(500, { ok: false, error: error.message });
-
-    if (!data) {
-      return json(404, { ok: false, error: "NOT_FOUND" });
-    }
+    if (!data) return json(404, { ok: false, error: "NOT_FOUND" });
 
     return json(200, { ok: true, node: data });
   } catch (e) {

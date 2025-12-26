@@ -22,6 +22,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasOwn(obj: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -46,32 +50,39 @@ function asNumber(value: unknown, fallback: number) {
   return fallback;
 }
 
+function slugify(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
 // ---------------------------------------------
-// Admin Guard (safe, minimal, non-breaking)
-// - Supports BOTH schemas:
-//   A) admins.user_id = auth.users.id   (recommended)
-//   B) admins.id      = auth.users.id   (legacy)
+// Admin Guard (robust)
+// 1) Prefer RPC public.is_admin() if available
+// 2) Fallback to admins table check (admins.id = auth.uid())
 // ---------------------------------------------
-async function requireAdmin(
-  supabase: ReturnType<typeof createSupabaseServerClient>
-) {
+async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClient>) {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
   if (userErr || !userRes.user) {
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  const userId = userRes.user.id;
-
-  const { data: byUserId, error: e1 } = await supabase
-    .from("admins")
-    .select("user_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!e1 && byUserId) {
-    return { ok: true as const };
+  // 1) RPC check (best)
+  try {
+    const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
+    if (!rpcErr && typeof isAdmin === "boolean") {
+      if (isAdmin) return { ok: true as const };
+      return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
+    }
+  } catch {
+    // ignore and fallback
   }
+
+  // 2) Fallback: admins.id == auth.users.id
+  const userId = userRes.user.id;
 
   const { data: byId, error: e2 } = await supabase
     .from("admins")
@@ -88,6 +99,29 @@ async function requireAdmin(
   }
 
   return { ok: true as const };
+}
+
+async function getNextOrderIndex(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  parent_id: string | null
+): Promise<number> {
+  // Find current max(order_index) for same parent and return max+1
+  let query = supabase.from("content_nodes").select("order_index");
+
+  if (parent_id === null) {
+    query = query.is("parent_id", null);
+  } else {
+    query = query.eq("parent_id", parent_id);
+  }
+
+  const { data, error } = await query.order("order_index", { ascending: false }).limit(1);
+
+  if (error) return 0;
+
+  const top = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  const prev = top && typeof top.order_index === "number" ? top.order_index : 0;
+
+  return prev + 1;
 }
 
 // =============================================
@@ -123,6 +157,10 @@ export async function GET() {
 // =============================================
 // POST → Create node (folder by default)
 // Accept both snake_case and camelCase payloads.
+// File-manager behavior:
+// - If order_index not provided => append at end (max+1)
+// - blog/project require ref_id
+// - slug auto-generated if missing (especially for blog/project)
 // =============================================
 export async function POST(req: Request) {
   try {
@@ -155,20 +193,33 @@ export async function POST(req: Request) {
     const nodeTypeRaw = body.node_type ?? body.nodeType ?? "folder";
     const node_type: NodeType = isValidNodeType(nodeTypeRaw) ? nodeTypeRaw : "folder";
 
-    const slugRaw = body.slug ?? null;
-    const slug = asNullableTrimmedString(slugRaw);
-
     const refRaw = body.ref_id ?? body.refId ?? null;
     const ref_id = asNullableTrimmedString(refRaw);
 
-    const orderRaw = body.order_index ?? body.orderIndex ?? 0;
-    const order_index = asNumber(orderRaw, 0);
+    // Require ref_id for editor-backed nodes
+    if ((node_type === "blog" || node_type === "project") && !ref_id) {
+      return json(400, { ok: false, error: "REF_ID_REQUIRED" });
+    }
+
+    const slugRaw = body.slug ?? null;
+    const slugFromBody = asNullableTrimmedString(slugRaw);
+    const slug =
+      slugFromBody ??
+      ((node_type === "blog" || node_type === "project") ? slugify(title) : null);
 
     const iconRaw = body.icon ?? null;
     const icon = asNullableTrimmedString(iconRaw);
 
     const descRaw = body.description ?? null;
     const description = asNullableTrimmedString(descRaw);
+
+    // order_index:
+    // - if provided (snake/camel) use it
+    // - else compute "append at end"
+    const orderWasProvided = hasOwn(body, "order_index") || hasOwn(body, "orderIndex");
+    const order_index = orderWasProvided
+      ? asNumber(body.order_index ?? body.orderIndex ?? 0, 0)
+      : await getNextOrderIndex(supabase, parent_id);
 
     const insertPayload = {
       parent_id,

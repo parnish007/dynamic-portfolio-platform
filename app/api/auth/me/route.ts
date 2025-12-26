@@ -50,36 +50,24 @@ function devDetails(message: string) {
 }
 
 /**
- * Admin check strategy:
- * 1) Prefer RPC: public.is_admin()  (avoids querying admins table and avoids RLS recursion)
- * 2) Fallback: select from admins by id (works if your admins SELECT policy is simple, e.g. id = auth.uid())
+ * Admin check strategy (STRICT):
+ * ✅ Use RPC: public.is_admin() SECURITY DEFINER
+ *
+ * Why:
+ * - Avoids querying public.admins directly (RLS can block SELECT)
+ * - Prevents recursion-policy pitfalls
+ * - Matches your project agenda: centralized, secure admin check
  */
-async function isAdmin(
-  supabase: ReturnType<typeof createSupabaseServerClient>,
-  userId: string
+async function isAdminViaRpc(
+  supabase: ReturnType<typeof createSupabaseServerClient>
 ): Promise<{ ok: true; isAdmin: boolean } | { ok: false; details: string }> {
-  // 1) RPC first (recommended)
-  try {
-    const rpcRes = await supabase.rpc("is_admin");
-    if (!rpcRes.error) {
-      return { ok: true, isAdmin: Boolean(rpcRes.data) };
-    }
+  const rpcRes = await supabase.rpc("is_admin");
 
-    // If RPC exists but fails, continue to fallback
-    // (could be missing permissions, missing function, etc.)
-  } catch (e) {
-    // ignore and fallback
+  if (rpcRes.error) {
+    return { ok: false, details: rpcRes.error.message };
   }
 
-  // 2) Fallback: direct admins table check
-  const byId = await supabase.from("admins").select("id").eq("id", userId).maybeSingle();
-
-  if (byId.error) {
-    // If user has old recursive RLS policy, we’ll get recursion error here.
-    return { ok: false, details: byId.error.message };
-  }
-
-  return { ok: true, isAdmin: Boolean(byId.data?.id) };
+  return { ok: true, isAdmin: Boolean(rpcRes.data) };
 }
 
 export async function GET(req: Request) {
@@ -112,20 +100,16 @@ export async function GET(req: Request) {
       return json(401, payload);
     }
 
-    const adminRes = await isAdmin(supabase, user.id);
+    const adminRes = await isAdminViaRpc(supabase);
 
     if (!adminRes.ok) {
-      // Helpful dev-only message for the exact bug you hit
-      const hint =
-        adminRes.details.includes("infinite recursion detected in policy for relation")
-          ? "Your public.admins RLS policy is recursive. Fix it by removing any policy that queries public.admins inside itself (e.g. EXISTS (SELECT 1 FROM public.admins ...)). Use a non-recursive check like (id = auth.uid()) OR rely on RPC public.is_admin() as SECURITY DEFINER."
-          : adminRes.details;
-
       const payload: MeErr = {
         ok: false,
         authenticated: false,
         error: "INTERNAL_ERROR",
-        details: devDetails(hint),
+        details: devDetails(
+          `Admin check failed: ${adminRes.details}. Ensure SQL function public.is_admin() exists and is SECURITY DEFINER.`
+        ),
       };
       return json(500, payload);
     }
