@@ -44,9 +44,9 @@ function envList(name: string): string[] {
  *
  * Dynamic robots.txt
  * - SEO-first defaults
- * - Disallow internal build + API paths
- * - Disallow admin surfaces (supports both /admin/* and root-admin routes)
- * - Sitemap auto-linked (standard /sitemap.xml) with env override
+ * - Disallow admin + internal surfaces ONLY
+ * - Public features (chat, chatbot, content, projects, blogs) remain crawlable
+ * - Sitemap auto-linked
  */
 export async function GET(): Promise<Response> {
   const siteUrl =
@@ -58,58 +58,55 @@ export async function GET(): Promise<Response> {
 
   const normalizedSite = normalizeSiteUrl(siteUrl);
 
-  // If you ever want to lock down indexing in staging:
-  // Set ROBOTS_INDEXING=false
+  // Staging / preview kill-switch
   const indexingAllowed = envBool("ROBOTS_INDEXING", true);
 
-  // Optional: allow custom sitemap route (ex: /api/seo/sitemap?format=xml)
   const sitemapPathRaw = process.env.ROBOTS_SITEMAP_PATH ?? "/sitemap.xml";
   const sitemapPath = isNonEmptyString(sitemapPathRaw)
-    ? (sitemapPathRaw.startsWith("/") ? sitemapPathRaw.trim() : `/${sitemapPathRaw.trim()}`)
+    ? sitemapPathRaw.startsWith("/")
+      ? sitemapPathRaw.trim()
+      : `/${sitemapPathRaw.trim()}`
     : "/sitemap.xml";
 
-  // Optional: extra admin paths you may add later (comma-separated)
-  // Example: ADMIN_ROBOTS_DISALLOW="/admin,/admin/*,/studio"
   const extraAdminDisallow = envList("ADMIN_ROBOTS_DISALLOW");
+
+  const legacyAdminEnabled = envBool(
+    "NEXT_PUBLIC_ENABLE_LEGACY_ADMIN_ROUTES",
+    false
+  );
 
   const lines: string[] = [];
 
-  // Default rules
   lines.push("User-agent: *");
 
   if (!indexingAllowed) {
-    // Hard block indexing (useful for preview/staging)
     lines.push("Disallow: /");
   } else {
     lines.push("Allow: /");
 
-    // Internal / noisy paths
+    // Internal / framework paths
     lines.push("Disallow: /api/");
     lines.push("Disallow: /_next/");
     lines.push("Disallow: /favicon.ico");
 
-    // Admin (recommended canonical admin prefix)
+    // Canonical admin routes
     lines.push("Disallow: /admin");
     lines.push("Disallow: /admin/");
 
-    /**
-     * Root-mounted admin routes (only disallow what is truly ADMIN)
-     * Keep this list SMALL to avoid blocking public pages.
-     * If any of these are public in your site, remove them.
-     */
-    lines.push("Disallow: /login");
-    lines.push("Disallow: /dashboard");
-    lines.push("Disallow: /content");
-    lines.push("Disallow: /chat");
-    lines.push("Disallow: /chatbot");
+    // Legacy admin routes (ONLY if explicitly enabled)
+    if (legacyAdminEnabled) {
+      lines.push("Disallow: /login");
+      lines.push("Disallow: /dashboard");
+      lines.push("Disallow: /content");
+    }
 
-    // Env-driven extra admin disallows
+    // Extra admin-only paths (env driven)
     for (const p of extraAdminDisallow) {
       lines.push(`Disallow: ${p}`);
     }
   }
 
-  // Optional: block AI training bots if configured
+  // Optional AI crawler blocking
   const blockAIBots = envBool("BLOCK_AI_BOTS", false);
 
   if (blockAIBots) {
@@ -127,19 +124,15 @@ export async function GET(): Promise<Response> {
     lines.push("Disallow: /");
   }
 
-  // Sitemap reference (only if site URL is known and indexing is allowed)
   if (normalizedSite && indexingAllowed) {
     lines.push("");
     lines.push(`Sitemap: ${normalizedSite}${sitemapPath}`);
   }
 
-  const body = lines.join("\n");
-
-  return new NextResponse(body, {
+  return new NextResponse(lines.join("\n"), {
     status: 200,
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
-      // Cache 1 day (fine for robots)
       "Cache-Control": "public, max-age=86400",
     },
   });

@@ -1,7 +1,5 @@
 // app/api/admin/content-nodes/[id]/route.ts
-
 import { NextResponse } from "next/server";
-
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -44,10 +42,14 @@ function asNumber(value: unknown, fallback: number) {
   return fallback;
 }
 
+function requiresRefId(nodeType: NodeType): boolean {
+  return nodeType === "blog" || nodeType === "project";
+}
+
 // ---------------------------------------------
-// Admin Guard (robust)
-// 1) Prefer RPC public.is_admin() if available
-// 2) Fallback to admins.id == auth.uid()
+// Admin Guard (authoritative)
+// - Supabase SSR cookies
+// - RPC public.is_admin() SECURITY DEFINER
 // ---------------------------------------------
 async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClient>) {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
@@ -56,31 +58,18 @@ async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClie
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  // 1) RPC
-  try {
-    const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
-    if (!rpcErr && typeof isAdmin === "boolean") {
-      if (isAdmin) return { ok: true as const };
-      return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
-    }
-  } catch {
-    // ignore -> fallback
+  const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
+
+  if (rpcErr) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "ADMIN_CHECK_FAILED" as const,
+      details: rpcErr.message,
+    };
   }
 
-  // 2) Fallback
-  const userId = userRes.user.id;
-
-  const { data: byId, error: e2 } = await supabase
-    .from("admins")
-    .select("id")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (e2) {
-    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
-  }
-
-  if (!byId) {
+  if (!isAdmin) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
@@ -90,7 +79,10 @@ async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClie
 async function getNode(
   supabase: ReturnType<typeof createSupabaseServerClient>,
   nodeId: string
-): Promise<{ ok: true; node: { id: string; parent_id: string | null; node_type: NodeType; ref_id: string | null } } | { ok: false; status: number; error: string }> {
+): Promise<
+  | { ok: true; node: { id: string; parent_id: string | null; node_type: NodeType; ref_id: string | null } }
+  | { ok: false; status: number; error: string }
+> {
   const { data, error } = await supabase
     .from("content_nodes")
     .select("id,parent_id,node_type,ref_id")
@@ -127,28 +119,26 @@ async function ensureParentIsFolderIfSet(
   if (error) return { ok: false as const, status: 500, error: error.message };
   if (!data) return { ok: false as const, status: 400, error: "PARENT_NOT_FOUND" };
 
-  const nt = data.node_type;
-  if (nt !== "folder") {
+  if (data.node_type !== "folder") {
     return { ok: false as const, status: 400, error: "PARENT_MUST_BE_FOLDER" };
   }
 
   return { ok: true as const };
 }
 
-async function isDescendant(
+async function wouldCreateCycle(
   supabase: ReturnType<typeof createSupabaseServerClient>,
   nodeId: string,
-  maybeParentId: string
-) {
-  // Returns true if maybeParentId is inside nodeId subtree
-  let current: string | null = maybeParentId;
+  nextParentId: string
+): Promise<boolean> {
+  // Efficient-ish: fetch all ancestor links in a bounded loop.
+  // Still looped, but avoids “return true on any error” ambiguity and keeps guard.
+  let current: string | null = nextParentId;
   let guard = 0;
 
   while (current) {
     guard += 1;
-
-    // hard stop: prevents infinite loops / insane depth
-    if (guard > 300) return true;
+    if (guard > 300) return true; // treat as unsafe
 
     if (current === nodeId) return true;
 
@@ -158,16 +148,11 @@ async function isDescendant(
       .eq("id", current)
       .maybeSingle();
 
-    if (error) return true;
-
+    if (error) return true; // unsafe
     current = (data?.parent_id as string | null) ?? null;
   }
 
   return false;
-}
-
-function requiresRefId(nodeType: NodeType): boolean {
-  return nodeType === "blog" || nodeType === "project";
 }
 
 // =============================================
@@ -186,7 +171,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const supabase = createSupabaseServerClient();
 
     const admin = await requireAdmin(supabase);
-    if (!admin.ok) return json(admin.status, { ok: false, error: admin.error });
+    if (!admin.ok) {
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
+    }
 
     const currentRes = await getNode(supabase, nodeId);
     if (!currentRes.ok) return json(currentRes.status, { ok: false, error: currentRes.error });
@@ -195,7 +182,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     try {
       body = await req.json();
     } catch {
-      body = null;
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
     }
 
     if (!isPlainObject(body)) {
@@ -243,7 +230,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     // Parent (move): accept parent_id OR parentId
     if ("parent_id" in b || "parentId" in b) {
       const raw = (b as any).parent_id ?? (b as any).parentId ?? null;
-
       const nextParentId = raw === null ? null : cleanNullableString(raw);
 
       if (nextParentId && nextParentId === nodeId) {
@@ -251,12 +237,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       }
 
       if (nextParentId) {
-        // parent must be folder
         const parentOk = await ensureParentIsFolderIfSet(supabase, nextParentId);
         if (!parentOk.ok) return json(parentOk.status, { ok: false, error: parentOk.error });
 
-        // prevent cycles
-        const bad = await isDescendant(supabase, nodeId, nextParentId);
+        const bad = await wouldCreateCycle(supabase, nodeId, nextParentId);
         if (bad) return json(400, { ok: false, error: "PARENT_CANNOT_BE_DESCENDANT" });
       }
 
@@ -294,11 +278,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return json(400, { ok: false, error: "REF_ID_REQUIRED" });
     }
 
-    // Optional: enforce parent folder for ALL nodes when moving (done above).
     if (Object.keys(update).length === 0) {
       return json(400, { ok: false, error: "NO_FIELDS_TO_UPDATE" });
     }
 
+    // Keep (non-breaking) — if you later confirm DB trigger exists, we can remove.
     update.updated_at = new Date().toISOString();
 
     const { data, error } = await supabase
@@ -308,13 +292,13 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .select("*")
       .maybeSingle();
 
-    if (error) return json(500, { ok: false, error: error.message });
+    if (error) return json(500, { ok: false, error: "DB_ERROR", details: error.message });
     if (!data) return json(404, { ok: false, error: "NOT_FOUND" });
 
     return json(200, { ok: true, node: data });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 
@@ -329,14 +313,16 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     const supabase = createSupabaseServerClient();
 
     const admin = await requireAdmin(supabase);
-    if (!admin.ok) return json(admin.status, { ok: false, error: admin.error });
+    if (!admin.ok) {
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
+    }
 
     const { count, error: childErr } = await supabase
       .from("content_nodes")
       .select("id", { count: "exact", head: true })
       .eq("parent_id", nodeId);
 
-    if (childErr) return json(500, { ok: false, error: childErr.message });
+    if (childErr) return json(500, { ok: false, error: "DB_ERROR", details: childErr.message });
 
     if ((count ?? 0) > 0) {
       return json(409, {
@@ -348,12 +334,12 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
 
     const { error } = await supabase.from("content_nodes").delete().eq("id", nodeId);
 
-    if (error) return json(500, { ok: false, error: error.message });
+    if (error) return json(500, { ok: false, error: "DB_ERROR", details: error.message });
 
     return json(200, { ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 

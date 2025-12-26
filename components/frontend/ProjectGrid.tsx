@@ -15,39 +15,52 @@ function safeText(input: unknown, fallback: string): string {
   return t.length > 0 ? t : fallback;
 }
 
+function safeStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.filter((x) => typeof x === "string").map((x) => x.trim()).filter((x) => x.length > 0);
+}
+
 export default function ProjectCard({ project }: ProjectCardProps) {
   const title = safeText(project.title, "Untitled");
   const summary = safeText(project.summary, "");
-  const tech = Array.isArray(project.techStack) ? project.techStack : [];
+  const tech = safeStringArray(project.techStack);
 
-  const slug = typeof project.slug === "string" ? project.slug.trim() : "";
-  const href = `/project/${encodeURIComponent(slug || "unknown")}`;
+  const slug = safeText(project.slug, "");
+  const canOpen = slug.length > 0;
+  const href = canOpen ? `/project/${encodeURIComponent(slug)}` : "#";
+
+  const views =
+    typeof (project as any).views === "number" && Number.isFinite((project as any).views)
+      ? (project as any).views
+      : null;
 
   return (
     <article className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5 transition hover:bg-zinc-900/35">
-      {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-base font-semibold tracking-tight">
-          <Link
-            href={href}
-            className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-          >
-            {title}
-          </Link>
+          {canOpen ? (
+            <Link
+              href={href}
+              className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              {title}
+            </Link>
+          ) : (
+            <span className="text-zinc-200">{title}</span>
+          )}
         </h3>
+
         <span className="rounded-full border border-zinc-800 bg-zinc-950/40 px-2 py-0.5 text-xs text-zinc-400">
           Project
         </span>
       </div>
 
-      {/* Summary */}
       {summary ? (
         <p className="mt-2 line-clamp-3 text-sm text-zinc-400">{summary}</p>
       ) : (
         <p className="mt-2 text-sm text-zinc-500">No summary provided.</p>
       )}
 
-      {/* Tech stack */}
       {tech.length ? (
         <ul className="mt-4 flex flex-wrap gap-2">
           {tech.slice(0, 8).map((t, idx) => (
@@ -63,17 +76,34 @@ export default function ProjectCard({ project }: ProjectCardProps) {
         <p className="mt-4 text-xs text-zinc-500">Tech stack not specified.</p>
       )}
 
-      {/* Footer */}
       <div className="mt-5 flex items-center justify-between gap-3">
         <div className="text-xs text-zinc-500">
-          Views: <span className="text-zinc-300">{project.views ?? 0}</span>
+          {views !== null ? (
+            <>
+              Views: <span className="text-zinc-300">{views}</span>
+            </>
+          ) : (
+            <> </> // keep spacing; or you can show nothing
+          )}
         </div>
-        <Link
-          href={href}
-          className="inline-flex items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-xs font-medium hover:bg-zinc-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-        >
-          Open
-        </Link>
+
+        {canOpen ? (
+          <Link
+            href={href}
+            className="inline-flex items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-xs font-medium hover:bg-zinc-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+          >
+            Open
+          </Link>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="inline-flex cursor-not-allowed items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/20 px-3 py-1.5 text-xs font-medium text-zinc-500"
+            title="Missing project slug"
+          >
+            Open
+          </button>
+        )}
       </div>
     </article>
   );

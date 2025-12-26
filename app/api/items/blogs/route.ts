@@ -27,6 +27,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function safeInt(value: string | null, fallback: number, min: number, max: number): number {
   if (!isNonEmptyString(value)) return fallback;
   const n = Number.parseInt(value, 10);
@@ -121,35 +125,31 @@ function allowRequest(ip: string): { allowed: boolean; retryAfterSeconds?: numbe
   return { allowed: true };
 }
 
-function getSupabaseConfig(): { url: string; key: string; table: string; keyType: "anon" | "service" } | null {
+/**
+ * Public items APIs MUST use anon key only.
+ */
+function getSupabasePublicConfig(): { url: string; anonKey: string; table: string } | null {
   const url =
-    process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
+    process.env.SUPABASE_URL ??
     "";
 
   const anonKey =
-    process.env.SUPABASE_ANON_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+    process.env.SUPABASE_ANON_KEY ??
     "";
-
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
   const table = isNonEmptyString(process.env.SUPABASE_BLOGS_TABLE)
     ? String(process.env.SUPABASE_BLOGS_TABLE).trim()
     : "blogs";
 
-  if (!isNonEmptyString(url)) return null;
+  if (!isNonEmptyString(url) || !isNonEmptyString(anonKey)) return null;
 
-  if (isNonEmptyString(anonKey)) {
-    return { url: String(url).trim().replace(/\/$/, ""), key: String(anonKey).trim(), table, keyType: "anon" };
-  }
-
-  if (isNonEmptyString(serviceKey)) {
-    return { url: String(url).trim().replace(/\/$/, ""), key: String(serviceKey).trim(), table, keyType: "service" };
-  }
-
-  return null;
+  return {
+    url: String(url).trim().replace(/\/$/, ""),
+    anonKey: String(anonKey).trim(),
+    table,
+  };
 }
 
 function buildPostgrestUrl(args: {
@@ -220,9 +220,13 @@ function normalizeBlogRow(row: Record<string, unknown>): BlogItem | null {
     readingTime: readingTime !== null ? Math.max(0, Math.min(999, Math.round(readingTime))) : null,
     publishedAt,
     isPublished:
-      typeof row.isPublished === "boolean" ? row.isPublished : (row.is_published as boolean | null) ?? null,
+      typeof row.isPublished === "boolean"
+        ? row.isPublished
+        : (row.is_published as boolean | null) ?? null,
     isFeatured:
-      typeof row.isFeatured === "boolean" ? row.isFeatured : (row.is_featured as boolean | null) ?? null,
+      typeof row.isFeatured === "boolean"
+        ? row.isFeatured
+        : (row.is_featured as boolean | null) ?? null,
     orderIndex:
       typeof row.orderIndex === "number"
         ? row.orderIndex
@@ -241,32 +245,42 @@ function sanitizeTagForCs(tag: string): string {
   return tag.trim().replaceAll("{", "").replaceAll("}", "").replaceAll(",", " ").slice(0, 48);
 }
 
+function wantsContent(url: URL): boolean {
+  const include = url.searchParams.get("include");
+  const includeContent = url.searchParams.get("includeContent");
+  const contentParam = url.searchParams.get("content");
+  const byInclude = isNonEmptyString(include) && include.split(",").map((s) => s.trim()).includes("content");
+  const byBool =
+    toBool(includeContent) === true ||
+    toBool(contentParam) === true;
+
+  return byInclude || byBool;
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
   const rate = allowRequest(ip);
 
   if (!rate.allowed) {
     const retryAfter = rate.retryAfterSeconds ?? 60;
-    return new NextResponse(JSON.stringify({ ok: false, error: "Too many requests. Please slow down." }), {
-      status: 429,
-      headers: {
-        "Content-Type": "application/json",
-        "Retry-After": String(retryAfter),
-      },
-    });
-  }
-
-  const cfg = getSupabaseConfig();
-  if (!cfg) {
     return NextResponse.json(
-      { ok: false, error: "Missing Supabase configuration. Set SUPABASE_URL and an ANON key (preferred)." },
-      { status: 500 },
+      { ok: false, error: "TOO_MANY_REQUESTS" },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(retryAfter),
+          "Cache-Control": "no-store",
+        },
+      }
     );
   }
 
-  const warnings: string[] = [];
-  if (cfg.keyType === "service") {
-    warnings.push("Using SERVICE_ROLE key for read endpoint. Prefer SUPABASE_ANON_KEY for public routes.");
+  const cfg = getSupabasePublicConfig();
+  if (!cfg) {
+    return NextResponse.json(
+      { ok: false, error: "Missing Supabase public config. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY." },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
 
   const url = new URL(request.url);
@@ -285,12 +299,24 @@ export async function GET(request: Request): Promise<Response> {
   const published = toBool(publishedParam);
   const featured = toBool(featuredParam);
 
+  // Include content rules:
+  // - Listing endpoints default: NO content (fast)
+  // - If id/slug present: include content by default (detail page)
+  // - Can force include via include=content or includeContent=1
+  const detailMode = isNonEmptyString(id) || isNonEmptyString(slug);
+  const includeContent = wantsContent(url) || detailMode;
+
+  const selectBase =
+    "id,slug,title,summary,excerpt,cover_image,tags,category,reading_time,published_at,is_published,is_featured,order_index,created_at,updated_at";
+  const select = includeContent ? `${selectBase},content` : selectBase;
+
   const filters: Array<{ key: string; value: string }> = [];
   const orClauses: string[] = [];
 
   if (isNonEmptyString(id)) filters.push({ key: "id", value: `eq.${id.trim()}` });
   if (isNonEmptyString(slug)) filters.push({ key: "slug", value: `eq.${slug.trim()}` });
 
+  // Default: only published true (public-safe)
   if (published === undefined) {
     filters.push({ key: "is_published", value: "eq.true" });
   } else {
@@ -312,17 +338,21 @@ export async function GET(request: Request): Promise<Response> {
     orClauses.push(
       `title.ilike.${pattern}`,
       `summary.ilike.${pattern}`,
-      `excerpt.ilike.${pattern}`,
-      `content.ilike.${pattern}`,
+      `excerpt.ilike.${pattern}`
     );
+
+    // Only search content when content is being fetched OR detail mode
+    if (includeContent || detailMode) {
+      orClauses.push(`content.ilike.${pattern}`);
+    }
   }
 
-  // Best-effort tags filter (schema-dependent).
+  // Tags: best-effort "contains" filter for text[]/jsonb arrays
   if (tags && tags.length > 0) {
     const cleaned = tags.map(sanitizeTagForCs).filter((t) => t.length > 0);
-    for (const t of cleaned) {
-      orClauses.push(`tags.cs.{${t}}`);
-      orClauses.push(`tags_text.ilike.%${t}%`);
+    if (cleaned.length > 0) {
+      // Require ALL tags if possible (cs contains set)
+      filters.push({ key: "tags", value: `cs.{${cleaned.join(",")}}` });
     }
   }
 
@@ -338,17 +368,23 @@ export async function GET(request: Request): Promise<Response> {
   const postgrestUrl = buildPostgrestUrl({
     baseUrl: cfg.url,
     table: cfg.table,
-    select: "*",
+    select,
     filters,
     order,
   });
+
+  // Public caching: allow CDN caching for listings, but not too long.
+  // If you want strict always-fresh, set no-store here.
+  const cacheHeader = detailMode
+    ? "no-store"
+    : "public, s-maxage=300, stale-while-revalidate=600";
 
   try {
     const res = await fetch(postgrestUrl.toString(), {
       method: "GET",
       headers: {
-        apikey: cfg.key,
-        Authorization: `Bearer ${cfg.key}`,
+        apikey: cfg.anonKey,
+        Authorization: `Bearer ${cfg.anonKey}`,
         Accept: "application/json",
         Range: `${rangeFrom}-${rangeTo}`,
         Prefer: "count=exact",
@@ -360,7 +396,7 @@ export async function GET(request: Request): Promise<Response> {
       const text = await res.text();
       return NextResponse.json(
         { ok: false, error: "Failed to fetch blogs.", details: text.slice(0, 2000) },
-        { status: 502 },
+        { status: 502, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -379,29 +415,55 @@ export async function GET(request: Request): Promise<Response> {
 
     const items = rows.map((r) => normalizeBlogRow(r)).filter((x): x is BlogItem => x !== null);
 
+    // If content is not included, remove it from payload so clients don’t rely on it accidentally
+    const itemsOut = includeContent
+      ? items
+      : items.map((it) => {
+          const { content, ...rest } = it;
+          return rest as BlogItem;
+        });
+
     return NextResponse.json(
       {
         ok: true,
-        items,
+        items: itemsOut,
         page: { limit, offset, total },
-        warnings,
+        includes: { content: includeContent },
       },
       {
         status: 200,
         headers: {
-          "Cache-Control": "no-store",
+          "Cache-Control": cacheHeader,
         },
-      },
+      }
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error.";
     return NextResponse.json(
-      { ok: false, error: "Unexpected server error.", details: msg.slice(0, 2000) },
-      { status: 500 },
+      { ok: false, error: "Unexpected server error.", details: String(msg).slice(0, 2000) },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 }
 
 export async function POST(): Promise<Response> {
-  return NextResponse.json({ ok: false, error: "Method not allowed. Use GET." }, { status: 405 });
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
+
+export async function PUT(): Promise<Response> {
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function PATCH(): Promise<Response> {
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function DELETE(): Promise<Response> {
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function OPTIONS(): Promise<Response> {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Contr

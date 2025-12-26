@@ -1,18 +1,10 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
-import { getProjectBySlug, incrementProjectView } from "@/services/project.service";
+import { getProjectBySlug } from "@/services/project.service";
 import type { Project } from "@/types/project";
 
-/**
- * Public Project Detail Page
- *
- * Rules enforced:
- * - SEO-safe rendering
- * - 404 if project is not visible/published
- * - View count increment (side-effect safe for Stage 3)
- * - No admin logic
- */
+import ProjectViewTracker from "./ProjectViewTracker";
 
 type PageProps = {
   params: {
@@ -20,13 +12,41 @@ type PageProps = {
   };
 };
 
+function safeText(input: unknown, fallback: string): string {
+  if (typeof input !== "string") {
+    return fallback;
+  }
+  const t = input.trim();
+  return t.length > 0 ? t : fallback;
+}
+
+function safeStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((x) => typeof x === "string")
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+}
+
+function safeUrl(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  const s = input.trim();
+  if (!s) return null;
+
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Metadata                                                           */
 /* ------------------------------------------------------------------ */
 
-export async function generateMetadata(
-  { params }: PageProps
-): Promise<Metadata> {
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const project = await getProjectBySlug(params.slug);
 
   if (!project) {
@@ -36,15 +56,23 @@ export async function generateMetadata(
     };
   }
 
+  const isPublished =
+    typeof (project as any).isPublished === "boolean"
+      ? (project as any).isPublished
+      : typeof (project as any).is_published === "boolean"
+        ? (project as any).is_published
+        : false;
+
+  const title = safeText(project.seo?.title, safeText(project.title, "Project"));
+  const description = safeText(project.seo?.description, safeText(project.summary, ""));
+
+  const canonicalPath = `/project/${encodeURIComponent(project.slug)}`;
+
   return {
-    title: project.seo?.title ?? project.title,
-    description: project.seo?.description ?? project.summary,
-    alternates: {
-      canonical: `/project/${project.slug}`,
-    },
-    robots: project.visible && project.published
-      ? { index: true, follow: true }
-      : { index: false, follow: false },
+    title,
+    description: description || undefined,
+    alternates: { canonical: canonicalPath },
+    robots: isPublished ? { index: true, follow: true } : { index: false, follow: false },
   };
 }
 
@@ -59,27 +87,53 @@ export default async function ProjectPage({ params }: PageProps) {
     notFound();
   }
 
-  // View tracking (noop placeholder for now)
-  await incrementProjectView(project.id);
+  const isPublished =
+    typeof (project as any).isPublished === "boolean"
+      ? (project as any).isPublished
+      : typeof (project as any).is_published === "boolean"
+        ? (project as any).is_published
+        : false;
+
+  // ✅ Enforce public visibility
+  if (!isPublished) {
+    notFound();
+  }
+
+  const title = safeText(project.title, "Untitled");
+  const summary = safeText(project.summary, "");
+  const techStack = safeStringArray(project.techStack);
+
+  const caseStudyEnabled = Boolean((project as any).caseStudyEnabled);
+  const caseStudy = (project as any).caseStudy ?? {};
+
+  const linksRaw = Array.isArray((project as any).links) ? (project as any).links : [];
+
+  const links = linksRaw
+    .map((l: any) => {
+      const url = safeUrl(l?.url);
+      if (!url) return null;
+      const label = safeText(l?.label, url);
+      return { url, label };
+    })
+    .filter((x: any): x is { url: string; label: string } => x !== null);
 
   return (
     <main className="mx-auto w-full max-w-4xl px-4 py-10">
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-          {project.title}
-        </h1>
+      {/* ✅ Client-side view tracking (prevents double-count issues) */}
+      <ProjectViewTracker projectId={project.id} slug={project.slug} />
 
-        {project.summary ? (
-          <p className="mt-3 max-w-2xl text-sm text-zinc-300 sm:text-base">
-            {project.summary}
-          </p>
+      <header>
+        <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
+
+        {summary ? (
+          <p className="mt-3 max-w-2xl text-sm text-zinc-300 sm:text-base">{summary}</p>
         ) : null}
 
-        {project.techStack?.length ? (
+        {techStack.length ? (
           <ul className="mt-4 flex flex-wrap gap-2">
-            {project.techStack.map((t) => (
+            {techStack.map((t, idx) => (
               <li
-                key={t}
+                key={`${t}-${idx}`}
                 className="rounded-full border border-zinc-800 bg-zinc-950/30 px-2 py-0.5 text-xs text-zinc-300"
               >
                 {t}
@@ -90,47 +144,47 @@ export default async function ProjectPage({ params }: PageProps) {
       </header>
 
       <section className="mt-8 space-y-8">
-        {project.caseStudyEnabled ? (
+        {caseStudyEnabled ? (
           <>
             <article>
               <h2 className="text-lg font-semibold">Problem</h2>
               <p className="mt-2 text-sm text-zinc-300">
-                {project.caseStudy.problem || "No details provided."}
+                {safeText(caseStudy.problem, "No details provided.")}
               </p>
             </article>
 
             <article>
               <h2 className="text-lg font-semibold">Constraints</h2>
               <p className="mt-2 text-sm text-zinc-300">
-                {project.caseStudy.constraints || "No details provided."}
+                {safeText(caseStudy.constraints, "No details provided.")}
               </p>
             </article>
 
             <article>
               <h2 className="text-lg font-semibold">Data</h2>
               <p className="mt-2 text-sm text-zinc-300">
-                {project.caseStudy.data || "No details provided."}
+                {safeText(caseStudy.data, "No details provided.")}
               </p>
             </article>
 
             <article>
               <h2 className="text-lg font-semibold">Experiments</h2>
               <p className="mt-2 text-sm text-zinc-300">
-                {project.caseStudy.experiments || "No details provided."}
+                {safeText(caseStudy.experiments, "No details provided.")}
               </p>
             </article>
 
             <article>
               <h2 className="text-lg font-semibold">Results</h2>
               <p className="mt-2 text-sm text-zinc-300">
-                {project.caseStudy.results || "No details provided."}
+                {safeText(caseStudy.results, "No details provided.")}
               </p>
             </article>
 
             <article>
               <h2 className="text-lg font-semibold">Learnings</h2>
               <p className="mt-2 text-sm text-zinc-300">
-                {project.caseStudy.learnings || "No details provided."}
+                {safeText(caseStudy.learnings, "No details provided.")}
               </p>
             </article>
           </>
@@ -141,11 +195,11 @@ export default async function ProjectPage({ params }: PageProps) {
         )}
       </section>
 
-      {project.links?.length ? (
+      {links.length ? (
         <footer className="mt-10 border-t border-zinc-800 pt-6">
           <h2 className="text-base font-semibold">Links</h2>
           <ul className="mt-3 space-y-2">
-            {project.links.map((l) => (
+            {links.map((l) => (
               <li key={l.url}>
                 <a
                   href={l.url}

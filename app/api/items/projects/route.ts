@@ -20,8 +20,6 @@ type ProjectItem = {
   orderIndex?: number | null;
   createdAt?: string | null;
   updatedAt?: string | null;
-
-  // Keep full row to remain schema-flexible (admin-controlled).
   raw: Record<string, unknown>;
 };
 
@@ -30,68 +28,45 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function safeInt(value: string | null, fallback: number, min: number, max: number): number {
-  if (!isNonEmptyString(value)) {
-    return fallback;
-  }
+  if (!isNonEmptyString(value)) return fallback;
   const n = Number.parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    return fallback;
-  }
+  if (Number.isNaN(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }
 
 function toBool(value: string | null): boolean | undefined {
-  if (!isNonEmptyString(value)) {
-    return undefined;
-  }
+  if (!isNonEmptyString(value)) return undefined;
   const v = value.trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes" || v === "on") {
-    return true;
-  }
-  if (v === "0" || v === "false" || v === "no" || v === "off") {
-    return false;
-  }
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
   return undefined;
 }
 
 function splitCsv(value: string | null, maxItems: number): string[] | undefined {
-  if (!isNonEmptyString(value)) {
-    return undefined;
-  }
+  if (!isNonEmptyString(value)) return undefined;
   const parts = value
     .split(",")
     .map((x) => x.trim())
     .filter((x) => x.length > 0)
     .slice(0, maxItems);
 
-  if (parts.length === 0) {
-    return undefined;
-  }
-  return parts;
+  return parts.length > 0 ? parts : undefined;
 }
 
 function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
   if (isNonEmptyString(xff)) {
     const first = xff.split(",")[0]?.trim();
-    if (isNonEmptyString(first)) {
-      return first;
-    }
+    if (isNonEmptyString(first)) return first;
   }
   const xRealIp = request.headers.get("x-real-ip");
-  if (isNonEmptyString(xRealIp)) {
-    return xRealIp.trim();
-  }
+  if (isNonEmptyString(xRealIp)) return xRealIp.trim();
   return "unknown";
 }
 
 /**
  * Best-effort in-memory rate limiter (per IP).
  * 120 requests per minute.
- *
- * NOTE:
- * This is not reliable in serverless/multi-instance environments.
- * Treat it as "best effort" only.
  */
 type RateEntry = { tokens: number; lastRefillMs: number };
 const RATE_LIMIT_GLOBAL_KEY = "__portfolio_items_projects_rate_limit__";
@@ -132,44 +107,24 @@ function allowRequest(ip: string): { allowed: boolean; retryAfterSeconds?: numbe
   return { allowed: true };
 }
 
-function getSupabaseConfig(): { url: string; key: string; table: string } | null {
-  const url =
-    process.env.SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_URL ??
-    "";
-
-  // ✅ SECURITY: public endpoint MUST NOT use SERVICE_ROLE
-  // Use ANON only; rely on RLS for public visibility.
-  const key =
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    "";
+/**
+ * Public items APIs MUST use anon key only.
+ */
+function getSupabasePublicConfig(): { url: string; anonKey: string; table: string } | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "";
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? "";
 
   const table = isNonEmptyString(process.env.SUPABASE_PROJECTS_TABLE)
     ? String(process.env.SUPABASE_PROJECTS_TABLE).trim()
     : "projects";
 
-  if (!isNonEmptyString(url) || !isNonEmptyString(key)) {
-    return null;
-  }
+  if (!isNonEmptyString(url) || !isNonEmptyString(anonKey)) return null;
 
-  return { url: String(url).trim().replace(/\/$/, ""), key: String(key).trim(), table };
-}
-
-/**
- * PostgREST supports ONLY ONE `or` query param.
- * So we build ONE combined `or=(...)` string.
- */
-function buildCombinedOr(orGroups: string[]): string | null {
-  const cleaned = orGroups.map((g) => g.trim()).filter((g) => g.length > 0);
-  if (cleaned.length === 0) {
-    return null;
-  }
-  // Each group should already be something like:
-  // "title.ilike.%x%,summary.ilike.%x%"
-  // We merge them with commas.
-  return `(${cleaned.join(",")})`;
+  return {
+    url: String(url).trim().replace(/\/$/, ""),
+    anonKey: String(anonKey).trim(),
+    table,
+  };
 }
 
 function buildPostgrestUrl(args: {
@@ -197,9 +152,7 @@ function normalizeProjectRow(row: Record<string, unknown>): ProjectItem | null {
   const idRaw = row.id ?? row.project_id ?? row.uuid;
   const slugRaw = row.slug ?? row.project_slug;
 
-  if (!isNonEmptyString(idRaw) || !isNonEmptyString(slugRaw)) {
-    return null;
-  }
+  if (!isNonEmptyString(idRaw) || !isNonEmptyString(slugRaw)) return null;
 
   const tagsValue = row.tags ?? row.tag_list ?? null;
   const techValue = row.techStack ?? row.tech_stack ?? row.stack ?? null;
@@ -243,9 +196,14 @@ function normalizeProjectRow(row: Record<string, unknown>): ProjectItem | null {
           ? row.repo_url
           : null,
     status: typeof row.status === "string" ? row.status : null,
-    isFeatured: typeof row.isFeatured === "boolean" ? row.isFeatured : (row.is_featured as boolean | null) ?? null,
+    isFeatured:
+      typeof row.isFeatured === "boolean"
+        ? row.isFeatured
+        : (row.is_featured as boolean | null) ?? null,
     isPublished:
-      typeof row.isPublished === "boolean" ? row.isPublished : (row.is_published as boolean | null) ?? null,
+      typeof row.isPublished === "boolean"
+        ? row.isPublished
+        : (row.is_published as boolean | null) ?? null,
     orderIndex:
       typeof row.orderIndex === "number"
         ? row.orderIndex
@@ -260,33 +218,47 @@ function normalizeProjectRow(row: Record<string, unknown>): ProjectItem | null {
   return item;
 }
 
+function escapeIlike(term: string): string {
+  // Escape % and _ which are wildcards in LIKE/ILIKE
+  // PostgREST supports standard SQL LIKE patterns; backslash escaping is commonly supported.
+  // Even if escape is ignored, this is still safe; it just stabilizes matching.
+  return term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
+function wantsDescription(url: URL): boolean {
+  const include = url.searchParams.get("include");
+  const includeDescription = url.searchParams.get("includeDescription");
+  const byInclude = isNonEmptyString(include) && include.split(",").map((s) => s.trim()).includes("description");
+  const byBool = toBool(includeDescription) === true;
+  return byInclude || byBool;
+}
+
 export async function GET(request: Request): Promise<Response> {
   const ip = getClientIp(request);
   const rate = allowRequest(ip);
 
   if (!rate.allowed) {
     const retryAfter = rate.retryAfterSeconds ?? 60;
-    return new NextResponse(
-      JSON.stringify({ ok: false, error: "Too many requests. Please slow down." }),
+    return NextResponse.json(
+      { ok: false, error: "TOO_MANY_REQUESTS" },
       {
         status: 429,
         headers: {
-          "Content-Type": "application/json",
           "Retry-After": String(retryAfter),
+          "Cache-Control": "no-store",
         },
-      },
+      }
     );
   }
 
-  const cfg = getSupabaseConfig();
+  const cfg = getSupabasePublicConfig();
   if (!cfg) {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_ANON_KEY).",
+        error: "Missing Supabase public config. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.",
       },
-      { status: 500 },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -305,17 +277,22 @@ export async function GET(request: Request): Promise<Response> {
   const published = toBool(publishedParam);
   const featured = toBool(featuredParam);
 
+  const detailMode = isNonEmptyString(id) || isNonEmptyString(slug);
+
+  // Default listing: do NOT include description (can be large)
+  // Detail mode: include description automatically
+  const includeDescription = wantsDescription(url) || detailMode;
+
+  const selectBase =
+    "id,slug,title,summary,cover_image,tags,tech_stack,live_url,repo_url,status,is_featured,is_published,order_index,created_at,updated_at";
+  const select = includeDescription ? `${selectBase},description` : selectBase;
+
   const filters: Array<{ key: string; value: string }> = [];
 
-  if (isNonEmptyString(id)) {
-    filters.push({ key: "id", value: `eq.${id.trim()}` });
-  }
+  if (isNonEmptyString(id)) filters.push({ key: "id", value: `eq.${id.trim()}` });
+  if (isNonEmptyString(slug)) filters.push({ key: "slug", value: `eq.${slug.trim()}` });
 
-  if (isNonEmptyString(slug)) {
-    filters.push({ key: "slug", value: `eq.${slug.trim()}` });
-  }
-
-  // Default: only published
+  // Default: only published true
   if (published === undefined) {
     filters.push({ key: "is_published", value: "eq.true" });
   } else {
@@ -326,29 +303,32 @@ export async function GET(request: Request): Promise<Response> {
     filters.push({ key: "is_featured", value: `eq.${featured ? "true" : "false"}` });
   }
 
-  // ✅ Combine OR filters safely into ONE `or=(...)`
-  const orGroups: string[] = [];
+  // Tags should narrow results (AND), not broaden (OR)
+  if (tags && tags.length > 0) {
+    const cleaned = tags
+      .map((t) => t.trim().replaceAll("{", "").replaceAll("}", "").replaceAll(",", " "))
+      .map((t) => t.slice(0, 48))
+      .filter((t) => t.length > 0);
 
+    if (cleaned.length > 0) {
+      filters.push({ key: "tags", value: `cs.{${cleaned.join(",")}}` });
+    }
+  }
+
+  // Text search (single OR param)
   if (isNonEmptyString(q)) {
-    const query = q.trim().slice(0, 120).replaceAll(",", " ");
+    const query = escapeIlike(q.trim().slice(0, 120).replaceAll(",", " "));
     const pattern = `%${query}%`;
 
-    orGroups.push(
-      `title.ilike.${pattern},summary.ilike.${pattern},description.ilike.${pattern}`,
-    );
-  }
+    const orClauses: string[] = [];
+    orClauses.push(`title.ilike.${pattern}`);
+    orClauses.push(`summary.ilike.${pattern}`);
 
-  if (tags && tags.length > 0) {
-    const safeTags = tags.map((t) => t.replaceAll("{", "").replaceAll("}", ""));
-    const tagFilters = safeTags.map((t) => `tags.cs.{${t}}`);
-    const tagTextFilters = safeTags.map((t) => `tags_text.ilike.%${t}%`);
+    if (includeDescription || detailMode) {
+      orClauses.push(`description.ilike.${pattern}`);
+    }
 
-    orGroups.push([...tagFilters, ...tagTextFilters].join(","));
-  }
-
-  const combinedOr = buildCombinedOr(orGroups);
-  if (combinedOr) {
-    filters.push({ key: "or", value: combinedOr });
+    filters.push({ key: "or", value: `(${orClauses.join(",")})` });
   }
 
   const order = "order_index.asc,updated_at.desc,created_at.desc";
@@ -359,19 +339,22 @@ export async function GET(request: Request): Promise<Response> {
   const postgrestUrl = buildPostgrestUrl({
     baseUrl: cfg.url,
     table: cfg.table,
-    select: "*",
+    select,
     filters,
     order,
   });
+
+  const cacheHeader = detailMode
+    ? "no-store"
+    : "public, s-maxage=300, stale-while-revalidate=600";
 
   try {
     const res = await fetch(postgrestUrl.toString(), {
       method: "GET",
       headers: {
-        apikey: cfg.key,
-        Authorization: `Bearer ${cfg.key}`,
+        apikey: cfg.anonKey,
+        Authorization: `Bearer ${cfg.anonKey}`,
         Accept: "application/json",
-        // ✅ Range must be a header for PostgREST
         Range: `${rangeFrom}-${rangeTo}`,
         Prefer: "count=exact",
       },
@@ -381,70 +364,79 @@ export async function GET(request: Request): Promise<Response> {
     if (!res.ok) {
       const text = await res.text();
       return NextResponse.json(
-        {
-          ok: false,
-          error: "Failed to fetch projects.",
-          details: text.slice(0, 2000),
-        },
-        { status: 502 },
+        { ok: false, error: "Failed to fetch projects.", details: text.slice(0, 2000) },
+        { status: 502, headers: { "Cache-Control": "no-store" } }
       );
     }
 
     const rows = (await res.json()) as Array<Record<string, unknown>>;
     const contentRange = res.headers.get("content-range");
+
     const total = (() => {
-      if (!isNonEmptyString(contentRange)) {
-        return null;
-      }
+      if (!isNonEmptyString(contentRange)) return null;
       const parts = contentRange.split("/");
-      if (parts.length !== 2) {
-        return null;
-      }
+      if (parts.length !== 2) return null;
       const totalStr = parts[1]?.trim();
-      if (!isNonEmptyString(totalStr) || totalStr === "*") {
-        return null;
-      }
+      if (!isNonEmptyString(totalStr) || totalStr === "*") return null;
       const n = Number.parseInt(totalStr, 10);
       return Number.isNaN(n) ? null : n;
     })();
 
-    const items = rows
-      .map((r) => normalizeProjectRow(r))
-      .filter((x): x is ProjectItem => x !== null);
+    const items = rows.map((r) => normalizeProjectRow(r)).filter((x): x is ProjectItem => x !== null);
+
+    const itemsOut = includeDescription
+      ? items
+      : items.map((it) => {
+          const { description, ...rest } = it;
+          return rest as ProjectItem;
+        });
 
     return NextResponse.json(
       {
         ok: true,
-        items,
-        page: {
-          limit,
-          offset,
-          total,
-        },
+        items: itemsOut,
+        page: { limit, offset, total },
+        includes: { description: includeDescription },
       },
       {
         status: 200,
         headers: {
-          "Cache-Control": "no-store",
+          "Cache-Control": cacheHeader,
         },
-      },
+      }
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error.";
     return NextResponse.json(
-      {
-        ok: false,
-        error: "Unexpected server error.",
-        details: msg.slice(0, 2000),
-      },
-      { status: 500 },
+      { ok: false, error: "Unexpected server error.", details: String(msg).slice(0, 2000) },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 }
 
 export async function POST(): Promise<Response> {
-  return NextResponse.json(
-    { ok: false, error: "Method not allowed. Use GET." },
-    { status: 405 },
-  );
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function PUT(): Promise<Response> {
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function PATCH(): Promise<Response> {
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function DELETE(): Promise<Response> {
+  return NextResponse.json({ ok: false, error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
+export async function OPTIONS(): Promise<Response> {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type",
+    },
+  });
 }

@@ -1,5 +1,4 @@
 // app/api/admin/projects/route.ts
-
 import { NextResponse } from "next/server";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -14,10 +13,6 @@ function json(status: number, body: unknown) {
     status,
     headers: { "Cache-Control": "no-store" },
   });
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asString(value: unknown): string {
@@ -37,48 +32,46 @@ function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asStringArrayOrNull(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out = value
+    .map((x) => (typeof x === "string" ? x.trim() : ""))
+    .filter((x) => x.length > 0);
+  return out.length > 0 ? out : null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // ---------------------------------------------
-// Admin Guard (SAFE, consistent)
-// - Supports BOTH schemas:
-//   A) admins.user_id = auth.users.id   (recommended)
-//   B) admins.id      = auth.users.id   (legacy)
+// Admin Guard (authoritative)
+// - Supabase SSR cookies
+// - RPC public.is_admin() SECURITY DEFINER
 // ---------------------------------------------
-async function requireAdmin(
-  supabase: ReturnType<typeof createSupabaseServerClient>
-) {
+async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClient>) {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
   if (userErr || !userRes.user) {
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  const userId = userRes.user.id;
+  const { data: isAdmin, error: adminErr } = await supabase.rpc("is_admin");
 
-  const { data: byUserId, error: e1 } = await supabase
-    .from("admins")
-    .select("user_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!e1 && byUserId) {
-    return { ok: true as const, userId };
+  if (adminErr) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "ADMIN_CHECK_FAILED" as const,
+      details: adminErr.message,
+    };
   }
 
-  const { data: byId, error: e2 } = await supabase
-    .from("admins")
-    .select("id")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (e2) {
-    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
-  }
-
-  if (!byId) {
+  if (!isAdmin) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
-  return { ok: true as const, userId };
+  return { ok: true as const, userId: userRes.user.id };
 }
 
 // =============================================
@@ -90,39 +83,22 @@ export async function GET() {
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
-    // Prefer updated_at desc, fallback to created_at desc if updated_at doesn't exist
-    const primary = await supabase
+    const { data, error } = await supabase
       .from("projects")
       .select("*")
       .order("updated_at", { ascending: false });
 
-    if (!primary.error) {
-      return json(200, { ok: true, projects: primary.data ?? [] });
+    if (error) {
+      return json(500, { ok: false, error: "DB_ERROR", details: error.message });
     }
 
-    const fallback = await supabase
-      .from("projects")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (fallback.error) {
-      // As a last resort, return without ordering
-      const last = await supabase.from("projects").select("*");
-
-      if (last.error) {
-        return json(500, { ok: false, error: last.error.message });
-      }
-
-      return json(200, { ok: true, projects: last.data ?? [] });
-    }
-
-    return json(200, { ok: true, projects: fallback.data ?? [] });
+    return json(200, { ok: true, projects: data ?? [] });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 
@@ -135,64 +111,63 @@ export async function POST(req: Request) {
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
-    let body: unknown;
+    let bodyUnknown: unknown = null;
+
     try {
-      body = await req.json();
+      bodyUnknown = await req.json();
     } catch {
-      body = null;
+      return json(400, { ok: false, error: "INVALID_JSON" });
     }
 
-    if (!isPlainObject(body)) {
-      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
-    }
+    const body = isPlainObject(bodyUnknown) ? bodyUnknown : {};
 
     const title = asString(body.title).trim();
     if (!title) {
       return json(400, { ok: false, error: "TITLE_REQUIRED" });
     }
 
-    // Keep insert schema-flexible:
-    // - don't set updated_at manually (column might not exist)
-    // - only include fields that likely exist
-    const insert: Record<string, unknown> = {
+    // Optional: link project into folder tree (only if schema supports)
+    const content_node_id =
+      typeof body.content_node_id === "string" && body.content_node_id.trim().length > 0
+        ? body.content_node_id.trim()
+        : null;
+
+    const insert = {
       title,
       slug: asNullableString(body.slug),
       summary: asNullableString(body.summary),
       description: asNullableString(body.description),
       cover_image: asNullableString(body.cover_image),
-      tags: Array.isArray(body.tags) ? body.tags : null,
-      tech_stack: Array.isArray(body.tech_stack) ? body.tech_stack : null,
+      tags: asStringArrayOrNull(body.tags),
+      tech_stack: asStringArrayOrNull(body.tech_stack),
       live_url: asNullableString(body.live_url),
       repo_url: asNullableString(body.repo_url),
       status: asNullableString(body.status),
+
       is_featured: asBoolean(body.is_featured, false),
       is_published: asBoolean(body.is_published, false),
+
       order_index: asNumber(body.order_index, 0),
+
+      content_node_id,
+
+      // Keep updated_at write (safe) — remove later ONLY if you confirm DB trigger covers it
+      updated_at: new Date().toISOString(),
     };
 
-    // Optional relationship (ONLY keep if your DB actually has this column)
-    // If you're not 100% sure, comment this out to avoid schema errors.
-    if ("content_node_id" in body) {
-      insert.content_node_id = asNullableString(body.content_node_id);
-    }
-
-    const { data, error } = await supabase
-      .from("projects")
-      .insert(insert)
-      .select("*")
-      .single();
+    const { data, error } = await supabase.from("projects").insert(insert).select("*").single();
 
     if (error) {
-      return json(500, { ok: false, error: error.message });
+      return json(500, { ok: false, error: "DB_ERROR", details: error.message });
     }
 
     return json(201, { ok: true, project: data });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 

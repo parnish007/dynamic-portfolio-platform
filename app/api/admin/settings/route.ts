@@ -1,6 +1,7 @@
 // app/api/admin/settings/route.ts
 
 import { NextResponse } from "next/server";
+import { headers } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -9,36 +10,108 @@ export const runtime = "nodejs";
 // Helpers
 // ---------------------------------------------
 function json(status: number, body: unknown) {
-  return NextResponse.json(body, { status });
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeError(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return "Unknown error";
+}
+
+function getOrigin(h: Headers): string {
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
+  return `${proto}://${host}`;
+}
+
+function pickForwardHeaders(h: Headers): Record<string, string> {
+  // Forward cookies + IP-ish headers so upstream rate limiting is consistent.
+  const out: Record<string, string> = {};
+  const cookie = h.get("cookie");
+  if (cookie) out.cookie = cookie;
+
+  const xff = h.get("x-forwarded-for");
+  if (xff) out["x-forwarded-for"] = xff;
+
+  const xRealIp = h.get("x-real-ip");
+  if (xRealIp) out["x-real-ip"] = xRealIp;
+
+  return out;
 }
 
 // ---------------------------------------------
-// Admin Guard (SAFE, CONSISTENT)
+// Admin Guard (authoritative)
+// - Supabase SSR cookies
+// - RPC public.is_admin() SECURITY DEFINER
+// - Fallback: if RPC missing, checks admins table (both schemas)
 // ---------------------------------------------
 async function requireAdmin(
-  supabase: ReturnType<typeof createSupabaseServerClient>
-) {
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+): Promise<
+  | { ok: true; userId: string }
+  | { ok: false; status: number; error: "UNAUTHENTICATED" | "FORBIDDEN" | "ADMIN_CHECK_FAILED"; details?: string }
+> {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
   if (userErr || !userRes.user) {
-    return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
+    return { ok: false, status: 401, error: "UNAUTHENTICATED" };
   }
 
-  const { data: adminRow } = await supabase
+  const userId = userRes.user.id;
+
+  // 1) RPC is_admin (best)
+  try {
+    const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
+    if (!rpcErr && typeof isAdmin === "boolean") {
+      if (isAdmin) return { ok: true, userId };
+      return { ok: false, status: 403, error: "FORBIDDEN" };
+    }
+    if (rpcErr) {
+      // If RPC exists but failed, surface it
+      return { ok: false, status: 500, error: "ADMIN_CHECK_FAILED", details: rpcErr.message };
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  // 2) Fallback: admins.user_id schema
+  const { data: byUserId, error: e1 } = await supabase
     .from("admins")
-    .select("id")
-    .eq("id", userRes.user.id)
+    .select("user_id")
+    .eq("user_id", userId)
     .maybeSingle();
 
-  if (!adminRow) {
-    return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
+  if (!e1 && byUserId) {
+    return { ok: true, userId };
   }
 
-  return { ok: true as const, userId: userRes.user.id };
+  // 3) Legacy fallback: admins.id schema
+  const { data: byId, error: e2 } = await supabase
+    .from("admins")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (e2) {
+    return { ok: false, status: 500, error: "ADMIN_CHECK_FAILED", details: e2.message };
+  }
+
+  if (!byId) {
+    return { ok: false, status: 403, error: "FORBIDDEN" };
+  }
+
+  return { ok: true, userId };
 }
 
 // =============================================
-// GET → Read global admin settings
+// GET → Admin-protected proxy to /api/settings
 // =============================================
 export async function GET() {
   try {
@@ -46,43 +119,47 @@ export async function GET() {
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: admin.details });
     }
 
-    /**
-     * Single-row global settings table
-     * id = 'global'
-     */
-    const { data, error } = await supabase
-      .from("settings")
-      .select("*")
-      .eq("id", "global")
-      .maybeSingle();
+    const h = headers();
+    const origin = getOrigin(h);
 
-    if (error) {
-      return json(500, { ok: false, error: error.message });
-    }
-
-    return json(200, {
-      ok: true,
-      settings: data ?? {
-        id: "global",
-        site_status: "active",
-        maintenance_mode: false,
-        allow_indexing: true,
-        availability: "open",
-        feature_flags: {},
-        updated_at: null,
+    const res = await fetch(`${origin}/api/settings`, {
+      method: "GET",
+      headers: {
+        ...pickForwardHeaders(h),
       },
+      cache: "no-store",
     });
+
+    const text = await res.text();
+    let data: unknown = null;
+
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      return json(
+        res.status,
+        isPlainObject(data)
+          ? data
+          : { ok: false, error: "UPSTREAM_ERROR", details: text.slice(0, 2000) },
+      );
+    }
+
+    return json(200, isPlainObject(data) ? data : { ok: true, raw: text });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: safeError(e) });
   }
 }
 
 // =============================================
-// PATCH → Update global settings (SAFE MERGE)
+// PATCH → Admin-protected proxy to /api/settings
+// (expects same contract as /api/settings)
 // =============================================
 export async function PATCH(req: Request) {
   try {
@@ -90,54 +167,50 @@ export async function PATCH(req: Request) {
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: admin.details });
     }
 
-    const body = (await req.json()) as Partial<{
-      site_status: "active" | "maintenance";
-      maintenance_mode: boolean;
-      allow_indexing: boolean;
-      availability: "open" | "busy" | "offline";
-      feature_flags: Record<string, boolean>;
-    }>;
-
-    if (!body || typeof body !== "object") {
-      return json(400, { ok: false, error: "INVALID_BODY" });
+    let body: unknown = null;
+    try {
+      body = await req.json();
+    } catch {
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
     }
 
-    const update: Record<string, unknown> = {};
+    const h = headers();
+    const origin = getOrigin(h);
 
-    if ("site_status" in body) update.site_status = body.site_status;
-    if ("maintenance_mode" in body) update.maintenance_mode = body.maintenance_mode;
-    if ("allow_indexing" in body) update.allow_indexing = body.allow_indexing;
-    if ("availability" in body) update.availability = body.availability;
-    if ("feature_flags" in body) update.feature_flags = body.feature_flags;
+    const res = await fetch(`${origin}/api/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...pickForwardHeaders(h),
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
 
-    if (Object.keys(update).length === 0) {
-      return json(400, { ok: false, error: "NO_FIELDS_TO_UPDATE" });
+    const text = await res.text();
+    let data: unknown = null;
+
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
     }
 
-    const { data, error } = await supabase
-      .from("settings")
-      .upsert(
-        {
-          id: "global",
-          ...update,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "id" }
-      )
-      .select("*")
-      .single();
-
-    if (error) {
-      return json(500, { ok: false, error: error.message });
+    if (!res.ok) {
+      return json(
+        res.status,
+        isPlainObject(data)
+          ? data
+          : { ok: false, error: "UPSTREAM_ERROR", details: text.slice(0, 2000) },
+      );
     }
 
-    return json(200, { ok: true, settings: data });
+    return json(200, isPlainObject(data) ? data : { ok: true, raw: text });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: safeError(e) });
   }
 }
 
@@ -150,4 +223,19 @@ export async function POST() {
 
 export async function DELETE() {
   return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function PUT() {
+  return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Methods": "GET, PATCH, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type",
+    },
+  });
 }

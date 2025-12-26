@@ -92,6 +92,7 @@ function buildTree(nodes: ContentNode[]): TreeNode[] {
 
     const parent = map.get(parentId);
 
+    // If parent is missing (or data inconsistent), treat as root to avoid losing nodes.
     if (!parent) {
       roots.push(node);
       continue;
@@ -132,7 +133,7 @@ function flattenTree(tree: TreeNode[]) {
 }
 
 function getSiblingGroup(nodes: ContentNode[], node: ContentNode) {
-  const siblings = nodes
+  return nodes
     .filter((n) => (n.parent_id ?? null) === (node.parent_id ?? null))
     .slice()
     .sort((a, b) => {
@@ -141,8 +142,6 @@ function getSiblingGroup(nodes: ContentNode[], node: ContentNode) {
       if (ai !== bi) return ai - bi;
       return a.title.localeCompare(b.title);
     });
-
-  return siblings;
 }
 
 function editorHrefForNode(node: ContentNode) {
@@ -157,6 +156,10 @@ function editorHrefForNode(node: ContentNode) {
   }
 
   return null;
+}
+
+function canBeContainer(nodeType: NodeType) {
+  return nodeType === "folder";
 }
 
 export default function ContentTree() {
@@ -180,15 +183,6 @@ export default function ContentTree() {
 
   const tree = useMemo(() => buildTree(nodes), [nodes]);
   const flat = useMemo(() => flattenTree(tree), [tree]);
-
-  const folderOptions = useMemo(() => {
-    const folders = nodes
-      .filter((n) => n.node_type === "folder")
-      .map((n) => ({ id: n.id, title: n.title }));
-
-    folders.sort((a, b) => a.title.localeCompare(b.title));
-    return folders;
-  }, [nodes]);
 
   function toggleExpanded(id: string) {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -226,6 +220,59 @@ export default function ContentTree() {
     if (selected.node_type === "folder") return selected.id;
     return selected.parent_id ?? null;
   }, [selected]);
+
+  const currentFolderLabel = useMemo(() => {
+    if (!selected) return "(root)";
+    if (selected.node_type === "folder") return selected.title;
+    const parent = nodes.find((n) => n.id === (selected.parent_id ?? ""));
+    return parent?.title ?? "(root)";
+  }, [nodes, selected]);
+
+  function buildIdToNodeMap(list: ContentNode[]) {
+    const map = new Map<string, ContentNode>();
+    for (const n of list) map.set(n.id, n);
+    return map;
+  }
+
+  function isDescendant(folderId: string, maybeDescendantId: string): boolean {
+    // Returns true if maybeDescendantId is inside folderId subtree.
+    // Walk up from maybeDescendantId to root and see if we hit folderId.
+    const byId = buildIdToNodeMap(nodes);
+    let cur: string | null = maybeDescendantId;
+
+    while (cur) {
+      if (cur === folderId) return true;
+      const node = byId.get(cur);
+      cur = node?.parent_id ?? null;
+    }
+
+    return false;
+  }
+
+  const folderOptions = useMemo(() => {
+    // Hierarchical labels like: "Root / A / B"
+    const byId = buildIdToNodeMap(nodes);
+
+    const folders = nodes.filter((n) => n.node_type === "folder");
+
+    const fullPathTitle = (id: string): string => {
+      const parts: string[] = [];
+      let cur: string | null = id;
+
+      while (cur) {
+        const node = byId.get(cur);
+        if (!node) break;
+        parts.push(node.title);
+        cur = node.parent_id ?? null;
+      }
+
+      return parts.reverse().join(" / ");
+    };
+
+    const opts = folders.map((f) => ({ id: f.id, title: fullPathTitle(f.id) }));
+    opts.sort((a, b) => a.title.localeCompare(b.title));
+    return opts;
+  }, [nodes]);
 
   async function load() {
     try {
@@ -318,6 +365,11 @@ export default function ContentTree() {
       const ok = data as NodeOk;
       setNodes((prev) => [...prev, ok.node]);
       setSelectedId(ok.node.id);
+
+      // Ensure parent is expanded so new folder is visible.
+      if (ok.node.parent_id) {
+        setExpanded((prev) => ({ ...prev, [ok.node.parent_id as string]: true }));
+      }
     } catch (e) {
       setError(safeError(e));
     }
@@ -402,6 +454,8 @@ export default function ContentTree() {
       const ok = nodeData as NodeOk;
       setNodes((prev) => [...prev, ok.node]);
       setSelectedId(ok.node.id);
+
+      setExpanded((prev) => ({ ...prev, [currentFolderId]: true }));
     } catch (e) {
       setError(safeError(e));
     } finally {
@@ -421,9 +475,7 @@ export default function ContentTree() {
     const title = titleRaw.trim();
     if (!title) return;
 
-    const slug = slugify(
-      window.prompt("Project slug? (optional)", slugify(title)) ?? slugify(title)
-    );
+    const slug = slugify(window.prompt("Project slug? (optional)", slugify(title)) ?? slugify(title));
 
     let createdProjectId: string | null = null;
 
@@ -488,6 +540,7 @@ export default function ContentTree() {
             ? (nodeData as ApiErr).error
             : `Create node failed (${nodeRes.status})`;
 
+        // Best-effort cleanup: delete created project if node creation fails.
         if (createdProjectId) {
           await fetch(`/api/admin/projects/${encodeURIComponent(createdProjectId)}`, {
             method: "DELETE",
@@ -501,6 +554,8 @@ export default function ContentTree() {
       const ok = nodeData as NodeOk;
       setNodes((prev) => [...prev, ok.node]);
       setSelectedId(ok.node.id);
+
+      setExpanded((prev) => ({ ...prev, [currentFolderId]: true }));
     } catch (e) {
       if (createdProjectId) {
         await fetch(`/api/admin/projects/${encodeURIComponent(createdProjectId)}`, {
@@ -533,11 +588,38 @@ export default function ContentTree() {
     }
   }
 
+  function validateMove(nextParentId: string | null) {
+    if (!selected) return { ok: false as const, error: "No selection." };
+
+    if ((nextParentId ?? null) === selected.id) {
+      return { ok: false as const, error: "A node cannot be moved into itself." };
+    }
+
+    // Only folders can be move targets (file-manager rule)
+    if (nextParentId) {
+      const target = nodes.find((n) => n.id === nextParentId) ?? null;
+      if (!target || !canBeContainer(target.node_type)) {
+        return { ok: false as const, error: "Target must be a folder." };
+      }
+    }
+
+    // Prevent folder cycles: cannot move folder into its descendant
+    if (selected.node_type === "folder" && nextParentId) {
+      const wouldCreateCycle = isDescendant(selected.id, nextParentId);
+      if (wouldCreateCycle) {
+        return { ok: false as const, error: "Cannot move a folder into its own descendant." };
+      }
+    }
+
+    return { ok: true as const };
+  }
+
   async function moveSelected(nextParentId: string | null) {
     if (!selected) return;
 
-    if (selected.node_type === "folder" && (nextParentId ?? null) === selected.id) {
-      setError("A folder cannot be moved into itself.");
+    const v = validateMove(nextParentId);
+    if (!v.ok) {
+      setError(v.error);
       return;
     }
 
@@ -546,8 +628,11 @@ export default function ContentTree() {
       setError(null);
 
       const updated = await patchNode(selected.id, { parent_id: nextParentId });
-
       setNodes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+
+      if (nextParentId) {
+        setExpanded((prev) => ({ ...prev, [nextParentId]: true }));
+      }
     } catch (e) {
       setError(safeError(e));
     } finally {
@@ -599,6 +684,7 @@ export default function ContentTree() {
   async function deleteSelected() {
     if (!selected) return;
 
+    // Client-side enforcement: cannot delete non-empty folders
     if (selected.node_type === "folder" && selectedHasChildren()) {
       setError("This folder is not empty. Delete or move its children first.");
       return;
@@ -669,9 +755,12 @@ export default function ContentTree() {
           }}
         >
           <div>
-            <p style={{ margin: 0, fontWeight: 800 }}>Tree</p>
+            <p style={{ margin: 0, fontWeight: 800 }}>Content Tree</p>
             <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
-              Select a folder (or an item inside it). New items are created in the current folder.
+              Current folder: <strong>{currentFolderLabel}</strong>
+            </p>
+            <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
+              Tip: select a folder to create inside it. Selecting an item uses its parent folder.
             </p>
           </div>
 
@@ -825,7 +914,9 @@ export default function ContentTree() {
             ) : null}
 
             <div style={{ display: "grid", gap: "var(--space-2)" }}>
-              <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>Move</p>
+              <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
+                Move (folders only)
+              </p>
 
               <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
                 <button className="btn" type="button" onClick={() => void moveSelected(null)} disabled={moving}>
@@ -840,7 +931,7 @@ export default function ContentTree() {
                     void moveSelected(v ? v : null);
                   }}
                   disabled={moving}
-                  style={{ minWidth: 180 }}
+                  style={{ minWidth: 220 }}
                 >
                   <option value="">(root)</option>
                   {folderOptions
@@ -852,6 +943,10 @@ export default function ContentTree() {
                     ))}
                 </select>
               </div>
+
+              <p style={{ margin: 0, fontSize: "var(--text-xs)", color: "var(--color-muted)" }}>
+                Safety: you can’t move a folder into itself or its descendants.
+              </p>
             </div>
 
             <div style={{ display: "grid", gap: "var(--space-2)" }}>

@@ -1,5 +1,4 @@
 // app/api/admin/content-nodes/route.ts
-
 import { NextResponse } from "next/server";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -58,10 +57,14 @@ function slugify(input: string): string {
     .replace(/(^-|-$)/g, "");
 }
 
+function requiresRefId(nodeType: NodeType): boolean {
+  return nodeType === "blog" || nodeType === "project";
+}
+
 // ---------------------------------------------
-// Admin Guard (robust)
-// 1) Prefer RPC public.is_admin() if available
-// 2) Fallback to admins table check (admins.id = auth.uid())
+// Admin Guard (authoritative)
+// - Supabase SSR cookies
+// - RPC public.is_admin() SECURITY DEFINER
 // ---------------------------------------------
 async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClient>) {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
@@ -70,33 +73,39 @@ async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClie
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  // 1) RPC check (best)
-  try {
-    const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
-    if (!rpcErr && typeof isAdmin === "boolean") {
-      if (isAdmin) return { ok: true as const };
-      return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
-    }
-  } catch {
-    // ignore and fallback
+  const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
+
+  if (rpcErr) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "ADMIN_CHECK_FAILED" as const,
+      details: rpcErr.message,
+    };
   }
 
-  // 2) Fallback: admins.id == auth.users.id
-  const userId = userRes.user.id;
-
-  const { data: byId, error: e2 } = await supabase
-    .from("admins")
-    .select("id")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (e2) {
-    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
-  }
-
-  if (!byId) {
+  if (!isAdmin) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
+
+  return { ok: true as const };
+}
+
+async function ensureParentFolderIfSet(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  parent_id: string | null
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  if (!parent_id) return { ok: true as const };
+
+  const { data, error } = await supabase
+    .from("content_nodes")
+    .select("id,node_type")
+    .eq("id", parent_id)
+    .maybeSingle();
+
+  if (error) return { ok: false as const, status: 500, error: "DB_ERROR" };
+  if (!data) return { ok: false as const, status: 400, error: "PARENT_NOT_FOUND" };
+  if (data.node_type !== "folder") return { ok: false as const, status: 400, error: "PARENT_MUST_BE_FOLDER" };
 
   return { ok: true as const };
 }
@@ -119,13 +128,13 @@ async function getNextOrderIndex(
   if (error) return 0;
 
   const top = Array.isArray(data) && data.length > 0 ? data[0] : null;
-  const prev = top && typeof top.order_index === "number" ? top.order_index : 0;
+  const prev = top && typeof (top as any).order_index === "number" ? (top as any).order_index : -1;
 
   return prev + 1;
 }
 
 // =============================================
-// GET → Fetch full content tree
+// GET → Fetch full content tree (admin)
 // =============================================
 export async function GET() {
   try {
@@ -133,7 +142,7 @@ export async function GET() {
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
     const { data, error } = await supabase
@@ -144,13 +153,13 @@ export async function GET() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      return json(500, { ok: false, error: error.message });
+      return json(500, { ok: false, error: "DB_ERROR", details: error.message });
     }
 
     return json(200, { ok: true, nodes: data ?? [] });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 
@@ -158,6 +167,7 @@ export async function GET() {
 // POST → Create node (folder by default)
 // Accept both snake_case and camelCase payloads.
 // File-manager behavior:
+// - parent must be folder (if set)
 // - If order_index not provided => append at end (max+1)
 // - blog/project require ref_id
 // - slug auto-generated if missing (especially for blog/project)
@@ -168,14 +178,14 @@ export async function POST(req: Request) {
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
     let body: unknown = null;
     try {
       body = await req.json();
     } catch {
-      body = null;
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
     }
 
     if (!isPlainObject(body)) {
@@ -187,38 +197,42 @@ export async function POST(req: Request) {
       return json(400, { ok: false, error: "TITLE_REQUIRED" });
     }
 
-    const parentRaw = body.parent_id ?? body.parentId ?? null;
-    const parent_id = asNullableTrimmedString(parentRaw);
+    const parentRaw = (body as any).parent_id ?? (body as any).parentId ?? null;
+    const parent_id = parentRaw === null ? null : asNullableTrimmedString(parentRaw);
 
-    const nodeTypeRaw = body.node_type ?? body.nodeType ?? "folder";
+    // Validate parent folder if provided (fixes unreliable subfolder behavior)
+    const parentOk = await ensureParentFolderIfSet(supabase, parent_id);
+    if (!parentOk.ok) {
+      return json(parentOk.status, { ok: false, error: parentOk.error });
+    }
+
+    const nodeTypeRaw = (body as any).node_type ?? (body as any).nodeType ?? "folder";
     const node_type: NodeType = isValidNodeType(nodeTypeRaw) ? nodeTypeRaw : "folder";
 
-    const refRaw = body.ref_id ?? body.refId ?? null;
-    const ref_id = asNullableTrimmedString(refRaw);
+    const refRaw = (body as any).ref_id ?? (body as any).refId ?? null;
+    const ref_id = refRaw === null ? null : asNullableTrimmedString(refRaw);
 
-    // Require ref_id for editor-backed nodes
-    if ((node_type === "blog" || node_type === "project") && !ref_id) {
+    if (requiresRefId(node_type) && !ref_id) {
       return json(400, { ok: false, error: "REF_ID_REQUIRED" });
     }
 
-    const slugRaw = body.slug ?? null;
-    const slugFromBody = asNullableTrimmedString(slugRaw);
+    const slugRaw = (body as any).slug ?? null;
+    const slugFromBody = slugRaw === null ? null : asNullableTrimmedString(slugRaw);
     const slug =
-      slugFromBody ??
-      ((node_type === "blog" || node_type === "project") ? slugify(title) : null);
+      slugFromBody ?? (requiresRefId(node_type) ? slugify(title) : null);
 
-    const iconRaw = body.icon ?? null;
-    const icon = asNullableTrimmedString(iconRaw);
+    const iconRaw = (body as any).icon ?? null;
+    const icon = iconRaw === null ? null : asNullableTrimmedString(iconRaw);
 
-    const descRaw = body.description ?? null;
-    const description = asNullableTrimmedString(descRaw);
+    const descRaw = (body as any).description ?? null;
+    const description = descRaw === null ? null : asNullableTrimmedString(descRaw);
 
     // order_index:
-    // - if provided (snake/camel) use it
-    // - else compute "append at end"
+    // - if provided use it
+    // - else compute append
     const orderWasProvided = hasOwn(body, "order_index") || hasOwn(body, "orderIndex");
     const order_index = orderWasProvided
-      ? asNumber(body.order_index ?? body.orderIndex ?? 0, 0)
+      ? asNumber((body as any).order_index ?? (body as any).orderIndex ?? 0, 0)
       : await getNextOrderIndex(supabase, parent_id);
 
     const insertPayload = {
@@ -233,20 +247,16 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     };
 
-    const { data, error } = await supabase
-      .from("content_nodes")
-      .insert(insertPayload)
-      .select("*")
-      .single();
+    const { data, error } = await supabase.from("content_nodes").insert(insertPayload).select("*").single();
 
     if (error) {
-      return json(500, { ok: false, error: error.message });
+      return json(500, { ok: false, error: "DB_ERROR", details: error.message });
     }
 
     return json(201, { ok: true, node: data });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 

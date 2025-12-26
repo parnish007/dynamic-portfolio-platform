@@ -1,6 +1,7 @@
 // app/api/media/upload/route.ts
 import { NextResponse } from "next/server";
 import crypto from "crypto";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -19,14 +20,16 @@ type CloudinaryUploadApiOk = {
     folder: string | null;
     createdAt: string | null;
 
-    // Extra: your app-side info
     requestedFolder: string;
-    path: string; // app logical path (folder/yyyy/mm/dd/name-rand.ext)
+    path: string;
     mime: string;
     size: number;
     uploadedAt: string;
     meta: Record<string, unknown> | null;
   };
+
+  // For clarity going forward
+  note?: string;
 };
 
 type CloudinaryUploadApiErr = {
@@ -41,6 +44,22 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonOk(data: CloudinaryUploadApiOk, status: number): Response {
+  return NextResponse.json(data, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+function jsonErr(error: string, status: number, details?: string): Response {
+  const payload: CloudinaryUploadApiErr = { ok: false, error };
+  if (isNonEmptyString(details)) payload.details = details.slice(0, 2000);
+  return NextResponse.json(payload, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 function getClientIp(request: Request): string {
@@ -97,22 +116,43 @@ function allowUpload(ip: string): { allowed: boolean; retryAfterSeconds?: number
 }
 
 /**
- * Upload auth (admin-only).
- * MUST set MEDIA_UPLOAD_SECRET in production.
+ * Upload authorization:
+ * - Primary: Admin session via Supabase SSR cookies + RPC public.is_admin()
+ * - Optional bypass: MEDIA_UPLOAD_SECRET header (server-to-server automation)
  */
-function isUploadAuthorized(request: Request): boolean {
+function isSecretBypassAuthorized(request: Request): boolean {
   const secret = process.env.MEDIA_UPLOAD_SECRET;
-
-  if (!isNonEmptyString(secret)) {
-    return false;
-  }
+  if (!isNonEmptyString(secret)) return false;
 
   const header = request.headers.get("x-media-upload-secret");
-  if (!isNonEmptyString(header)) {
-    return false;
-  }
+  if (!isNonEmptyString(header)) return false;
 
   return header.trim() === secret.trim();
+}
+
+async function isAdminSessionAuthorized(): Promise<{ ok: true } | { ok: false; status: number; error: string; details?: string }> {
+  try {
+    const supabase = createSupabaseServerClient();
+
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userRes.user) {
+      return { ok: false, status: 401, error: "UNAUTHENTICATED" };
+    }
+
+    const { data: isAdmin, error: rpcErr } = await supabase.rpc("is_admin");
+    if (rpcErr) {
+      return { ok: false, status: 500, error: "ADMIN_CHECK_FAILED", details: rpcErr.message };
+    }
+
+    if (!isAdmin) {
+      return { ok: false, status: 403, error: "FORBIDDEN" };
+    }
+
+    return { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, status: 500, error: "INTERNAL_ERROR", details: msg };
+  }
 }
 
 function sanitizeFilename(name: string): string {
@@ -192,18 +232,6 @@ function buildLogicalPath(args: {
   return { path: finalPath, originalName: original, folder };
 }
 
-function jsonOk(data: CloudinaryUploadApiOk, status: number): Response {
-  return NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function jsonErr(error: string, status: number, details?: string): Response {
-  const payload: CloudinaryUploadApiErr = { ok: false, error };
-  if (isNonEmptyString(details)) {
-    payload.details = details.slice(0, 2000);
-  }
-  return NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } });
-}
-
 function getCloudinaryConfig(): { cloudName: string; apiKey: string; apiSecret: string } | null {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME ?? "";
   const apiKey = process.env.CLOUDINARY_API_KEY ?? "";
@@ -221,8 +249,6 @@ function getCloudinaryConfig(): { cloudName: string; apiKey: string; apiSecret: 
 }
 
 function cloudinaryFolderFromRequestedFolder(requestedFolder: string): string {
-  // You can choose any convention here. This keeps your folder tree inside Cloudinary.
-  // Example: "uploads/2025/12/26"
   const base = isNonEmptyString(process.env.CLOUDINARY_FOLDER_DEFAULT)
     ? String(process.env.CLOUDINARY_FOLDER_DEFAULT).trim().replace(/\/+$/, "")
     : "portfolio";
@@ -239,7 +265,6 @@ function resourceTypeFromMime(mime: string): "image" | "video" | "raw" {
 }
 
 function signCloudinary(params: Record<string, string>, apiSecret: string): string {
-  // Cloudinary signature: sha1 of sorted params query string + api_secret
   const sorted = Object.keys(params)
     .sort()
     .map((k) => `${k}=${params[k]}`)
@@ -254,18 +279,31 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!rate.allowed) {
     const retryAfter = rate.retryAfterSeconds ?? 60;
-    return new NextResponse(JSON.stringify({ ok: false, error: "Too many requests." }), {
-      status: 429,
-      headers: {
-        "Content-Type": "application/json",
-        "Retry-After": String(retryAfter),
-        "Cache-Control": "no-store",
-      },
-    });
+    return NextResponse.json(
+      { ok: false, error: "TOO_MANY_REQUESTS" },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(retryAfter),
+          "Cache-Control": "no-store",
+        },
+      }
+    );
   }
 
-  if (!isUploadAuthorized(request)) {
-    return jsonErr("Unauthorized. Set MEDIA_UPLOAD_SECRET and pass x-media-upload-secret.", 401);
+  // Auth: admin session OR secret bypass
+  const bypass = isSecretBypassAuthorized(request);
+
+  if (!bypass) {
+    const adminAuth = await isAdminSessionAuthorized();
+    if (!adminAuth.ok) {
+      return jsonErr(
+        "Unauthorized.",
+        adminAuth.status,
+        adminAuth.details ??
+          "This endpoint requires an admin session (Supabase cookies) or x-media-upload-secret with MEDIA_UPLOAD_SECRET."
+      );
+    }
   }
 
   const cfg = getCloudinaryConfig();
@@ -273,7 +311,7 @@ export async function POST(request: Request): Promise<Response> {
     return jsonErr(
       "Missing Cloudinary configuration.",
       500,
-      "Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.",
+      "Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET."
     );
   }
 
@@ -333,9 +371,7 @@ export async function POST(request: Request): Promise<Response> {
   if (typeof metaRaw === "string" && isNonEmptyString(metaRaw)) {
     try {
       const parsed: unknown = JSON.parse(metaRaw);
-      if (isPlainObject(parsed)) {
-        meta = parsed;
-      }
+      if (isPlainObject(parsed)) meta = parsed;
     } catch {
       // ignore
     }
@@ -350,15 +386,10 @@ export async function POST(request: Request): Promise<Response> {
   const cloudinaryFolder = cloudinaryFolderFromRequestedFolder(requestedFolder);
   const resourceType = resourceTypeFromMime(mime);
 
-  // Cloudinary upload endpoint:
-  // POST https://api.cloudinary.com/v1_1/<cloud_name>/<resource_type>/upload
   const uploadUrl = `https://api.cloudinary.com/v1_1/${encodeURIComponent(cfg.cloudName)}/${resourceType}/upload`;
 
-  // We'll upload using multipart form.
-  // Signature is required because we use api_secret on server.
   const timestamp = Math.floor(Date.now() / 1000).toString();
 
-  // Keep original file name as public_id base (optional)
   const safeBase = sanitizeFilename(fileValue.name).replace(/\.[^.]+$/, "").slice(0, 80);
   const rand = crypto.randomBytes(8).toString("hex");
   const publicIdBase = safeBase ? `${safeBase}-${rand}` : `upload-${rand}`;
@@ -367,10 +398,6 @@ export async function POST(request: Request): Promise<Response> {
     folder: cloudinaryFolder,
     public_id: publicIdBase,
     timestamp,
-    // OPTIONAL: keep it private in Cloudinary until you want (default is fine)
-    // type: "upload",
-    // OPTIONAL: tags
-    // tags: "portfolio",
   };
 
   const signature = signCloudinary(signParams, cfg.apiSecret);
@@ -382,10 +409,6 @@ export async function POST(request: Request): Promise<Response> {
   uploadForm.set("signature", signature);
   uploadForm.set("folder", cloudinaryFolder);
   uploadForm.set("public_id", publicIdBase);
-
-  // OPTIONAL: store meta as context (Cloudinary context must be key=value|key=value)
-  // If you want it, set MEDIA_UPLOAD_SEND_CONTEXT=true and pack selected keys.
-  // For now, keep it simple and do NOT send arbitrary meta to Cloudinary.
 
   try {
     const res = await fetch(uploadUrl, {
@@ -400,37 +423,37 @@ export async function POST(request: Request): Promise<Response> {
       return jsonErr("Upload failed.", 502, text);
     }
 
-    let json: unknown;
+    let parsed: unknown;
     try {
-      json = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
       return jsonErr("Upload failed.", 502, "Invalid Cloudinary JSON response.");
     }
 
-    if (!isPlainObject(json)) {
+    if (!isPlainObject(parsed)) {
       return jsonErr("Upload failed.", 502, "Unexpected Cloudinary response.");
     }
 
-    const publicId = isNonEmptyString(json.public_id) ? String(json.public_id) : null;
-    const secureUrl = isNonEmptyString(json.secure_url) ? String(json.secure_url) : null;
-    const url = isNonEmptyString(json.url) ? String(json.url) : null;
+    const publicId = isNonEmptyString(parsed.public_id) ? String(parsed.public_id) : null;
+    const secureUrl = isNonEmptyString(parsed.secure_url) ? String(parsed.secure_url) : null;
+    const url = isNonEmptyString(parsed.url) ? String(parsed.url) : null;
 
     if (!publicId || !secureUrl || !url) {
       return jsonErr("Upload failed.", 502, "Missing public_id/url in response.");
     }
 
-    const width = typeof json.width === "number" && Number.isFinite(json.width) ? json.width : null;
-    const height = typeof json.height === "number" && Number.isFinite(json.height) ? json.height : null;
+    const width = typeof parsed.width === "number" && Number.isFinite(parsed.width) ? parsed.width : null;
+    const height = typeof parsed.height === "number" && Number.isFinite(parsed.height) ? parsed.height : null;
 
     const bytes =
-      typeof json.bytes === "number" && Number.isFinite(json.bytes) ? json.bytes : fileValue.size;
+      typeof parsed.bytes === "number" && Number.isFinite(parsed.bytes) ? parsed.bytes : fileValue.size;
 
-    const format = isNonEmptyString(json.format) ? String(json.format) : null;
-    const createdAt = isNonEmptyString(json.created_at) ? String(json.created_at) : null;
-    const folderOut = isNonEmptyString(json.folder) ? String(json.folder) : cloudinaryFolder;
+    const format = isNonEmptyString(parsed.format) ? String(parsed.format) : null;
+    const createdAt = isNonEmptyString(parsed.created_at) ? String(parsed.created_at) : null;
+    const folderOut = isNonEmptyString(parsed.folder) ? String(parsed.folder) : cloudinaryFolder;
 
-    const originalFilename = isNonEmptyString(json.original_filename)
-      ? String(json.original_filename)
+    const originalFilename = isNonEmptyString(parsed.original_filename)
+      ? String(parsed.original_filename)
       : originalName;
 
     return jsonOk(
@@ -456,8 +479,10 @@ export async function POST(request: Request): Promise<Response> {
           uploadedAt: new Date().toISOString(),
           meta,
         },
+        note:
+          "This endpoint is admin-protected but uses Cloudinary. Priority C media manager will be implemented via Supabase Storage under /api/admin/media/*.",
       },
-      201,
+      201
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error.";
@@ -471,4 +496,15 @@ export async function GET(): Promise<Response> {
 
 export async function DELETE(): Promise<Response> {
   return jsonErr("Method not allowed.", 405);
+}
+
+export async function OPTIONS(): Promise<Response> {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type, x-media-upload-secret",
+    },
+  });
 }

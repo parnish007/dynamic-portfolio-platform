@@ -1,5 +1,4 @@
 // app/api/admin/projects/[id]/route.ts
-
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -36,57 +35,48 @@ function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asStringArrayOrNull(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out = value
+    .map((x) => (typeof x === "string" ? x.trim() : ""))
+    .filter((x) => x.length > 0);
+  return out.length > 0 ? out : null;
+}
+
 // ---------------------------------------------
-// Admin Guard (SAFE, consistent)
-// - Supports BOTH schemas:
-//   A) admins.user_id = auth.users.id   (recommended)
-//   B) admins.id      = auth.users.id   (legacy)
+// Admin Guard (authoritative)
+// - Supabase SSR cookies
+// - RPC public.is_admin() SECURITY DEFINER
 // ---------------------------------------------
-async function requireAdmin(
-  supabase: ReturnType<typeof createSupabaseServerClient>
-) {
+async function requireAdmin(supabase: ReturnType<typeof createSupabaseServerClient>) {
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
   if (userErr || !userRes.user) {
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  const userId = userRes.user.id;
+  const { data: isAdmin, error: adminErr } = await supabase.rpc("is_admin");
 
-  const { data: byUserId, error: e1 } = await supabase
-    .from("admins")
-    .select("user_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!e1 && byUserId) {
-    return { ok: true as const };
+  if (adminErr) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "ADMIN_CHECK_FAILED" as const,
+      details: adminErr.message,
+    };
   }
 
-  const { data: byId, error: e2 } = await supabase
-    .from("admins")
-    .select("id")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (e2) {
-    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
-  }
-
-  if (!byId) {
+  if (!isAdmin) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
-  return { ok: true as const };
+  return { ok: true as const, userId: userRes.user.id };
 }
 
 // =============================================
-// GET → Fetch single project
+// GET → Fetch single project (admin)
 // =============================================
-export async function GET(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
   try {
     const projectId = params.id;
     if (!projectId) {
@@ -97,14 +87,10 @@ export async function GET(
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
-    const { data, error } = await supabase
-      .from("projects")
-      .select("*")
-      .eq("id", projectId)
-      .single();
+    const { data, error } = await supabase.from("projects").select("*").eq("id", projectId).single();
 
     if (error || !data) {
       return json(404, { ok: false, error: "NOT_FOUND" });
@@ -113,17 +99,14 @@ export async function GET(
     return json(200, { ok: true, project: data });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 
 // =============================================
 // PATCH → Update project (schema-flexible)
 // =============================================
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } }
-) {
+export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const projectId = params.id;
     if (!projectId) {
@@ -134,19 +117,21 @@ export async function PATCH(
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
-    let body: unknown;
+    let bodyUnknown: unknown = null;
     try {
-      body = await req.json();
+      bodyUnknown = await req.json();
     } catch {
-      body = null;
-    }
-
-    if (!isPlainObject(body)) {
       return json(400, { ok: false, error: "INVALID_JSON_BODY" });
     }
+
+    if (!isPlainObject(bodyUnknown)) {
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
+    }
+
+    const body = bodyUnknown;
 
     const update: Record<string, unknown> = {};
 
@@ -164,15 +149,15 @@ export async function PATCH(
     if ("repo_url" in body) update.repo_url = asNullableString(body.repo_url);
     if ("status" in body) update.status = asNullableString(body.status);
 
-    if ("tags" in body) update.tags = Array.isArray(body.tags) ? body.tags : null;
-    if ("tech_stack" in body) update.tech_stack = Array.isArray(body.tech_stack) ? body.tech_stack : null;
+    if ("tags" in body) update.tags = asStringArrayOrNull(body.tags);
+    if ("tech_stack" in body) update.tech_stack = asStringArrayOrNull(body.tech_stack);
 
     if ("is_featured" in body) update.is_featured = asBoolean(body.is_featured, false);
     if ("is_published" in body) update.is_published = asBoolean(body.is_published, false);
 
     if ("order_index" in body) update.order_index = asNumber(body.order_index, 0);
 
-    // Optional relationship (ONLY keep if your DB actually has this column)
+    // Optional relationship (ONLY if your DB actually has this column)
     if ("content_node_id" in body) {
       update.content_node_id = asNullableString(body.content_node_id);
     }
@@ -180,9 +165,6 @@ export async function PATCH(
     if (Object.keys(update).length === 0) {
       return json(400, { ok: false, error: "NO_FIELDS_TO_UPDATE" });
     }
-
-    // IMPORTANT: do NOT force updated_at unless you are 100% sure column exists.
-    // If your schema has updated_at, you should add a DB trigger or default, not client-side writes.
 
     const { data, error } = await supabase
       .from("projects")
@@ -192,23 +174,20 @@ export async function PATCH(
       .single();
 
     if (error) {
-      return json(500, { ok: false, error: error.message });
+      return json(500, { ok: false, error: "DB_ERROR", details: error.message });
     }
 
     return json(200, { ok: true, project: data });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 
 // =============================================
-// DELETE → Remove project
+// DELETE → Remove project (and cleanup linked content_node)
 // =============================================
-export async function DELETE(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
     const projectId = params.id;
     if (!projectId) {
@@ -219,22 +198,28 @@ export async function DELETE(
 
     const admin = await requireAdmin(supabase);
     if (!admin.ok) {
-      return json(admin.status, { ok: false, error: admin.error });
+      return json(admin.status, { ok: false, error: admin.error, details: (admin as any).details });
     }
 
-    const { error } = await supabase
-      .from("projects")
+    // Delete project first
+    const { error: delErr } = await supabase.from("projects").delete().eq("id", projectId);
+
+    if (delErr) {
+      return json(500, { ok: false, error: "DB_ERROR", details: delErr.message });
+    }
+
+    // Best-effort cleanup: remove content_nodes that point to this project
+    // (prevents orphan "file" nodes in the tree)
+    await supabase
+      .from("content_nodes")
       .delete()
-      .eq("id", projectId);
-
-    if (error) {
-      return json(500, { ok: false, error: error.message });
-    }
+      .eq("node_type", "project")
+      .eq("ref_id", projectId);
 
     return json(200, { ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return json(500, { ok: false, error: msg });
+    return json(500, { ok: false, error: "INTERNAL_ERROR", details: msg });
   }
 }
 
