@@ -1,4 +1,4 @@
-// app/(admin)/login/page.tsx
+// app/admin/login/page.tsx
 
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
@@ -24,7 +24,6 @@ function getNextPath(searchParams?: AdminLoginPageProps["searchParams"]): string
       ? raw[0]
       : undefined;
 
-  // Safety: only allow internal redirects
   if (!next) return "/admin/dashboard";
   if (!next.startsWith("/")) return "/admin/dashboard";
   if (next.startsWith("//")) return "/admin/dashboard";
@@ -32,24 +31,35 @@ function getNextPath(searchParams?: AdminLoginPageProps["searchParams"]): string
   return next;
 }
 
+/**
+ * DB schema confirmed:
+ * public.admins(id uuid, email text, created_at timestamptz)
+ *
+ * ✅ Primary: admins.id = auth.user.id
+ * ✅ Fallback: admins.user_id (older schema)
+ */
 async function isAdminUser(args: {
   supabase: ReturnType<typeof createSupabaseServerClient>;
   userId: string;
 }): Promise<boolean> {
-  const { data, error } = await args.supabase
+  const byId = await args.supabase
+    .from("admins")
+    .select("id")
+    .eq("id", args.userId)
+    .maybeSingle();
+
+  if (!byId.error && byId.data?.id) return true;
+
+  const byUserId = await args.supabase
     .from("admins")
     .select("user_id")
     .eq("user_id", args.userId)
     .maybeSingle();
 
-  if (error) return false;
+  if (!byUserId.error && (byUserId.data as any)?.user_id) return true;
 
-  return Boolean(data?.user_id);
+  return false;
 }
-
-// ============================================
-// Server Action: Login
-// ============================================
 
 async function loginAction(formData: FormData) {
   "use server";
@@ -86,7 +96,6 @@ async function loginAction(formData: FormData) {
     );
   }
 
-  // Confirm user + enforce admins table
   const { data: userRes } = await supabase.auth.getUser();
   const user = userRes?.user;
 
@@ -102,7 +111,6 @@ async function loginAction(formData: FormData) {
   const okAdmin = await isAdminUser({ supabase, userId: user.id });
 
   if (!okAdmin) {
-    // Immediately revoke session for non-admins
     await supabase.auth.signOut();
     redirect(
       `/admin/login?error=${encodeURIComponent(
@@ -111,7 +119,6 @@ async function loginAction(formData: FormData) {
     );
   }
 
-  // cookies are written by the Supabase server client
   redirect(safeNext);
 }
 
@@ -167,13 +174,7 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
         >
           <input type="hidden" name="next" value={next} />
 
-          <label
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.35rem",
-            }}
-          >
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
             <span className="text-sm" style={{ color: "var(--color-muted)" }}>
               Email
             </span>
@@ -187,13 +188,7 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
             />
           </label>
 
-          <label
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.35rem",
-            }}
-          >
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
             <span className="text-sm" style={{ color: "var(--color-muted)" }}>
               Password
             </span>
@@ -207,11 +202,7 @@ export default function AdminLoginPage(props: AdminLoginPageProps) {
             />
           </label>
 
-          <button
-            className="btn btn--primary"
-            type="submit"
-            style={{ marginTop: "0.25rem" }}
-          >
+          <button className="btn btn--primary" type="submit" style={{ marginTop: "0.25rem" }}>
             Sign in
           </button>
         </form>

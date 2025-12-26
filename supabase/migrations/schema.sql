@@ -47,28 +47,33 @@ create policy "admins_select_admin_only"
 on public.admins
 for select
 to authenticated
-using (exists (select 1 from public.admins a where a.id = auth.uid()));
+using (id = auth.uid());
 
 -- Only admins can manage admins (you can tighten later)
 drop policy if exists "admins_all_admin_only" on public.admins;
-create policy "admins_all_admin_only"
+
+-- Disable write access from client (manage admins via SQL/dashboard/service role only)
+create policy "admins_no_write"
 on public.admins
 for all
 to authenticated
-using (exists (select 1 from public.admins a where a.id = auth.uid()))
-with check (exists (select 1 from public.admins a where a.id = auth.uid()));
+using (false)
+with check (false);
 
 -- Function used by RLS everywhere
 create or replace function public.is_admin()
 returns boolean
 language sql
 stable
+security definer
+set search_path = public
 as $$
   select exists (
     select 1 from public.admins a
     where a.id = auth.uid()
   );
 $$;
+
 
 -- ============================================================================
 -- Content Tree (folders + items)

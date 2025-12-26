@@ -3,15 +3,33 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
+/**
+ * STRICT boundary (recommended):
+ * - Admin pages: /admin/*
+ * - Admin APIs:  /api/admin/*
+ *
+ * Legacy root admin routes are OPTIONAL and can be enabled via:
+ *   NEXT_PUBLIC_ENABLE_LEGACY_ADMIN_ROUTES=true
+ *
+ * This prevents accidental protection of public routes like /blogs or /projects.
+ */
+
+const ENABLE_LEGACY_ADMIN =
+  process.env.NEXT_PUBLIC_ENABLE_LEGACY_ADMIN_ROUTES === "true";
+
 function isPublicAsset(pathname: string): boolean {
   if (pathname.startsWith("/_next/")) return true;
   if (pathname === "/favicon.ico") return true;
   if (pathname === "/robots.txt") return true;
   if (pathname === "/sitemap.xml") return true;
+
+  // common static folders
   if (pathname.startsWith("/images/")) return true;
   if (pathname.startsWith("/icons/")) return true;
   if (pathname.startsWith("/assets/")) return true;
   if (pathname.startsWith("/fallback/")) return true;
+  if (pathname.startsWith("/fonts/")) return true;
+
   return false;
 }
 
@@ -23,23 +41,24 @@ function isAdminApiRoute(pathname: string): boolean {
   return pathname === "/api/admin" || pathname.startsWith("/api/admin/");
 }
 
-/*
-  Backwards-compatible admin detection:
-  - Supports legacy root admin routes (/login, /dashboard, ...)
-  - Supports new admin prefix routes (/admin/login, /admin/dashboard, ...)
-*/
-function isAdminPath(pathname: string): boolean {
+function isAdminPageRoute(pathname: string): boolean {
   if (pathname === "/admin") return true;
   if (pathname.startsWith("/admin/")) return true;
 
-  // Legacy admin pages
+  if (!ENABLE_LEGACY_ADMIN) return false;
+
+  // Legacy admin pages (ONLY if flag enabled)
   if (pathname === "/login") return true;
   if (pathname === "/dashboard") return true;
   if (pathname === "/content") return true;
+
+  // ⚠️ These are common public paths; legacy should be avoided.
+  // Keep only if your app truly still uses these as admin pages.
   if (pathname === "/blogs") return true;
   if (pathname.startsWith("/blogs/")) return true;
   if (pathname === "/projects") return true;
   if (pathname.startsWith("/projects/")) return true;
+
   if (pathname === "/media") return true;
   if (pathname === "/seo") return true;
   if (pathname === "/settings") return true;
@@ -50,16 +69,20 @@ function isAdminPath(pathname: string): boolean {
 }
 
 function isLoginPath(pathname: string): boolean {
-  return pathname === "/login" || pathname === "/admin/login";
+  // Canonical
+  if (pathname === "/admin/login") return true;
+
+  // Legacy (ONLY if enabled)
+  if (ENABLE_LEGACY_ADMIN && pathname === "/login") return true;
+
+  return false;
 }
 
 function buildLoginRedirect(req: NextRequest): NextResponse {
   const next = req.nextUrl.pathname + (req.nextUrl.search || "");
-  const loginPath = req.nextUrl.pathname.startsWith("/admin/")
-    ? "/admin/login"
-    : "/login";
 
-  const url = new URL(loginPath, req.url);
+  // Canonical admin login path always
+  const url = new URL("/admin/login", req.url);
   url.searchParams.set("next", next);
 
   return NextResponse.redirect(url);
@@ -103,9 +126,14 @@ export async function middleware(req: NextRequest) {
 
   if (isPublicAsset(pathname)) return NextResponse.next();
 
+  // ----------------------------
   // API handling
+  // ----------------------------
   if (isApiRoute(pathname)) {
-    // ✅ Protect ONLY /api/admin/*
+    // Always allow OPTIONS to pass (CORS / preflight).
+    if (req.method === "OPTIONS") return NextResponse.next();
+
+    // Protect ONLY /api/admin/*
     if (!isAdminApiRoute(pathname)) return NextResponse.next();
 
     const ok = await isAuthenticated(req);
@@ -123,8 +151,10 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Non-admin pages
-  if (!isAdminPath(pathname)) return NextResponse.next();
+  // ----------------------------
+  // Page handling
+  // ----------------------------
+  if (!isAdminPageRoute(pathname)) return NextResponse.next();
 
   const res = NextResponse.next();
   res.headers.set("x-pathname", pathname);
@@ -139,10 +169,12 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
+    // Canonical protection only:
     "/api/admin/:path*",
     "/admin/:path*",
 
-    // Legacy admin routes
+    // Legacy protection (optional flag, but matcher must still include them
+    // if you want middleware to run for those paths)
     "/login",
     "/dashboard",
     "/content",

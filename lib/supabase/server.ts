@@ -3,7 +3,13 @@
 import "server-only";
 
 import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
+
+type CookieToSet = {
+  name: string;
+  value: string;
+  options: CookieOptions;
+};
 
 export function createSupabaseServerClient() {
   const cookieStore = cookies();
@@ -19,19 +25,29 @@ export function createSupabaseServerClient() {
 
   return createServerClient(url, anonKey, {
     cookies: {
+      // Supabase SSR uses getAll() in Next.js App Router mode
       getAll() {
-        return cookieStore.getAll();
+        return cookieStore.getAll().map((c) => ({
+          name: c.name,
+          value: c.value,
+        }));
       },
-      setAll(cookiesToSet) {
+
+      // Supabase SSR uses setAll() to refresh session cookies
+      setAll(cookiesToSet: CookieToSet[]) {
         try {
           cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set({ name, value, ...options });
+            cookieStore.set(name, value, options);
           });
-        } catch {
-          /**
-           * In some server execution contexts, cookie writes can be restricted.
-           * We fail silently so auth reads still work and we avoid crashing routes.
-           */
+        } catch (err) {
+          // In some contexts (certain server components), cookie writes are not allowed.
+          // Route handlers & server actions should still be fine.
+          if (process.env.NODE_ENV !== "production") {
+            console.warn(
+              "[supabase/server] setAll() failed (non-fatal). If this happens in a Route Handler, auth may not persist.",
+              err
+            );
+          }
         }
       },
     },
