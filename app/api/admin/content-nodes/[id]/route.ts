@@ -6,11 +6,41 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
+type NodeType = "folder" | "section" | "project" | "blog";
+
 function json(status: number, body: unknown) {
   return NextResponse.json(body, {
     status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+// ---------------------------------------------
+// Helpers
+// ---------------------------------------------
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isValidNodeType(value: unknown): value is NodeType {
+  return value === "folder" || value === "section" || value === "project" || value === "blog";
+}
+
+function cleanNullableString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  return s ? s : null;
+}
+
+function asNumber(value: unknown, fallback: number) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+
+  return fallback;
 }
 
 // ---------------------------------------------
@@ -25,11 +55,7 @@ async function requireAdmin(
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
   if (userErr || !userRes.user) {
-    return {
-      ok: false as const,
-      status: 401,
-      error: "UNAUTHENTICATED" as const,
-    };
+    return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
   const userId = userRes.user.id;
@@ -49,31 +75,52 @@ async function requireAdmin(
     .maybeSingle();
 
   if (e2) {
-    return {
-      ok: false as const,
-      status: 500,
-      error: "INTERNAL_ERROR" as const,
-    };
+    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
   }
 
   if (!byId) {
-    return {
-      ok: false as const,
-      status: 403,
-      error: "FORBIDDEN" as const,
-    };
+    return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
   return { ok: true as const };
 }
 
-// =============================================
-// PATCH → Update node (rename / move / reorder)
-// =============================================
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } }
+async function isDescendant(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  nodeId: string,
+  maybeParentId: string
 ) {
+  // Returns true if maybeParentId is inside nodeId subtree
+  let current: string | null = maybeParentId;
+  let guard = 0;
+
+  while (current) {
+    guard += 1;
+    if (guard > 200) {
+      // cycle/insane depth guard
+      return true;
+    }
+
+    if (current === nodeId) return true;
+
+    const { data, error } = await supabase
+      .from("content_nodes")
+      .select("parent_id")
+      .eq("id", current)
+      .maybeSingle();
+
+    if (error) return true;
+    current = (data?.parent_id as string | null) ?? null;
+  }
+
+  return false;
+}
+
+// =============================================
+// PATCH → Update node (rename / move / reorder / link)
+// Accept both snake_case and camelCase payloads.
+// =============================================
+export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const nodeId = params.id;
     if (!nodeId) return json(400, { ok: false, error: "ID_REQUIRED" });
@@ -83,52 +130,98 @@ export async function PATCH(
     const admin = await requireAdmin(supabase);
     if (!admin.ok) return json(admin.status, { ok: false, error: admin.error });
 
-    let body: unknown;
+    let body: unknown = null;
     try {
       body = await req.json();
     } catch {
       body = null;
     }
 
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    if (!isPlainObject(body)) {
       return json(400, { ok: false, error: "INVALID_JSON_BODY" });
     }
 
-    const b = body as Partial<{
-      title: string;
-      parentId: string | null;
-      slug: string | null;
-      orderIndex: number;
-      icon: string | null;
-      description: string | null;
-    }>;
-
+    const b = body;
     const update: Record<string, unknown> = {};
 
+    // Title
     if (typeof b.title === "string") {
       const title = b.title.trim();
       if (!title) return json(400, { ok: false, error: "TITLE_EMPTY" });
       update.title = title;
     }
 
-    if ("parentId" in b) {
-      update.parent_id = b.parentId ?? null;
+    // Parent (move): accept parent_id OR parentId
+    let nextParentId: string | null | undefined = undefined;
+    if ("parent_id" in b || "parentId" in b) {
+      const raw = (b as any).parent_id ?? (b as any).parentId ?? null;
+
+      if (raw === null) nextParentId = null;
+      else nextParentId = cleanNullableString(raw);
+
+      // prevent parent === self
+      if (nextParentId && nextParentId === nodeId) {
+        return json(400, { ok: false, error: "PARENT_CANNOT_BE_SELF" });
+      }
+
+      // prevent cycles (moving under a descendant)
+      if (nextParentId) {
+        const bad = await isDescendant(supabase, nodeId, nextParentId);
+        if (bad) {
+          return json(400, { ok: false, error: "PARENT_CANNOT_BE_DESCENDANT" });
+        }
+      }
+
+      update.parent_id = nextParentId;
     }
 
+    // Slug
     if ("slug" in b) {
-      update.slug = b.slug ?? null;
+      update.slug = cleanNullableString((b as any).slug);
     }
 
-    if (typeof b.orderIndex === "number" && Number.isFinite(b.orderIndex)) {
-      update.order_index = b.orderIndex;
+    // Order (reorder): accept order_index OR orderIndex (number or numeric string)
+    if ("order_index" in b || "orderIndex" in b) {
+      const raw = (b as any).order_index ?? (b as any).orderIndex;
+
+      if (raw === null || raw === undefined) {
+        // ignore
+      } else {
+        const n = asNumber(raw, Number.NaN);
+        if (!Number.isFinite(n)) {
+          return json(400, { ok: false, error: "ORDER_INDEX_INVALID" });
+        }
+        update.order_index = n;
+      }
     }
 
+    // Icon
     if ("icon" in b) {
-      update.icon = b.icon ?? null;
+      update.icon = cleanNullableString((b as any).icon);
     }
 
+    // Description
     if ("description" in b) {
-      update.description = b.description ?? null;
+      update.description = cleanNullableString((b as any).description);
+    }
+
+    // Ref link (node -> real record): accept ref_id OR refId
+    if ("ref_id" in b || "refId" in b) {
+      const raw = (b as any).ref_id ?? (b as any).refId ?? null;
+      update.ref_id = raw === null ? null : cleanNullableString(raw);
+    }
+
+    // Node type (folder/section/project/blog): accept node_type OR nodeType
+    if ("node_type" in b || "nodeType" in b) {
+      const raw = (b as any).node_type ?? (b as any).nodeType;
+
+      if (raw === null || raw === undefined) {
+        // ignore
+      } else if (!isValidNodeType(raw)) {
+        return json(400, { ok: false, error: "NODE_TYPE_INVALID" });
+      } else {
+        update.node_type = raw;
+      }
     }
 
     if (Object.keys(update).length === 0) {
@@ -142,9 +235,13 @@ export async function PATCH(
       .update(update)
       .eq("id", nodeId)
       .select("*")
-      .single();
+      .maybeSingle();
 
     if (error) return json(500, { ok: false, error: error.message });
+
+    if (!data) {
+      return json(404, { ok: false, error: "NOT_FOUND" });
+    }
 
     return json(200, { ok: true, node: data });
   } catch (e) {
@@ -156,10 +253,7 @@ export async function PATCH(
 // =============================================
 // DELETE → Remove node (only if no children)
 // =============================================
-export async function DELETE(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
     const nodeId = params.id;
     if (!nodeId) return json(400, { ok: false, error: "ID_REQUIRED" });
@@ -169,7 +263,6 @@ export async function DELETE(
     const admin = await requireAdmin(supabase);
     if (!admin.ok) return json(admin.status, { ok: false, error: admin.error });
 
-    // Safety: prevent deleting nodes that still have children
     const { count, error: childErr } = await supabase
       .from("content_nodes")
       .select("id", { count: "exact", head: true })

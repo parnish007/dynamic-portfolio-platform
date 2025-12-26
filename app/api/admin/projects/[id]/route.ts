@@ -9,7 +9,14 @@ export const runtime = "nodejs";
 // Helpers
 // ---------------------------------------------
 function json(status: number, body: unknown) {
-  return NextResponse.json(body, { status });
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asString(value: unknown): string {
@@ -31,6 +38,9 @@ function asNumber(value: unknown, fallback: number): number {
 
 // ---------------------------------------------
 // Admin Guard (SAFE, consistent)
+// - Supports BOTH schemas:
+//   A) admins.user_id = auth.users.id   (recommended)
+//   B) admins.id      = auth.users.id   (legacy)
 // ---------------------------------------------
 async function requireAdmin(
   supabase: ReturnType<typeof createSupabaseServerClient>
@@ -41,13 +51,29 @@ async function requireAdmin(
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  const { data: adminRow } = await supabase
+  const userId = userRes.user.id;
+
+  const { data: byUserId, error: e1 } = await supabase
     .from("admins")
-    .select("id")
-    .eq("id", userRes.user.id)
+    .select("user_id")
+    .eq("user_id", userId)
     .maybeSingle();
 
-  if (!adminRow) {
+  if (!e1 && byUserId) {
+    return { ok: true as const };
+  }
+
+  const { data: byId, error: e2 } = await supabase
+    .from("admins")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (e2) {
+    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
+  }
+
+  if (!byId) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
@@ -92,7 +118,7 @@ export async function GET(
 }
 
 // =============================================
-// PATCH → Update project
+// PATCH → Update project (schema-flexible)
 // =============================================
 export async function PATCH(
   req: Request,
@@ -111,27 +137,21 @@ export async function PATCH(
       return json(admin.status, { ok: false, error: admin.error });
     }
 
-    const body = (await req.json()) as Partial<{
-      title: string;
-      slug: string | null;
-      summary: string | null;
-      description: string | null;
-      cover_image: string | null;
-      tags: string[] | null;
-      tech_stack: string[] | null;
-      live_url: string | null;
-      repo_url: string | null;
-      status: string | null;
-      is_featured: boolean;
-      is_published: boolean;
-      order_index: number;
-      content_node_id: string | null;
-    }>;
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      body = null;
+    }
+
+    if (!isPlainObject(body)) {
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
+    }
 
     const update: Record<string, unknown> = {};
 
-    if (typeof body.title === "string") {
-      const t = body.title.trim();
+    if ("title" in body) {
+      const t = asString(body.title).trim();
       if (!t) return json(400, { ok: false, error: "TITLE_EMPTY" });
       update.title = t;
     }
@@ -143,25 +163,26 @@ export async function PATCH(
     if ("live_url" in body) update.live_url = asNullableString(body.live_url);
     if ("repo_url" in body) update.repo_url = asNullableString(body.repo_url);
     if ("status" in body) update.status = asNullableString(body.status);
-    if ("content_node_id" in body) update.content_node_id = body.content_node_id ?? null;
 
     if ("tags" in body) update.tags = Array.isArray(body.tags) ? body.tags : null;
-    if ("tech_stack" in body) update.tech_stack = Array.isArray(body.tech_stack)
-      ? body.tech_stack
-      : null;
+    if ("tech_stack" in body) update.tech_stack = Array.isArray(body.tech_stack) ? body.tech_stack : null;
 
-    if ("is_featured" in body)
-      update.is_featured = asBoolean(body.is_featured, false);
+    if ("is_featured" in body) update.is_featured = asBoolean(body.is_featured, false);
+    if ("is_published" in body) update.is_published = asBoolean(body.is_published, false);
 
-    if ("is_published" in body)
-      update.is_published = asBoolean(body.is_published, false);
+    if ("order_index" in body) update.order_index = asNumber(body.order_index, 0);
 
-    if ("order_index" in body)
-      update.order_index = asNumber(body.order_index, 0);
+    // Optional relationship (ONLY keep if your DB actually has this column)
+    if ("content_node_id" in body) {
+      update.content_node_id = asNullableString(body.content_node_id);
+    }
 
     if (Object.keys(update).length === 0) {
       return json(400, { ok: false, error: "NO_FIELDS_TO_UPDATE" });
     }
+
+    // IMPORTANT: do NOT force updated_at unless you are 100% sure column exists.
+    // If your schema has updated_at, you should add a DB trigger or default, not client-side writes.
 
     const { data, error } = await supabase
       .from("projects")
@@ -222,4 +243,19 @@ export async function DELETE(
 // ---------------------------------------------
 export async function POST() {
   return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function PUT() {
+  return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Methods": "GET, PATCH, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type",
+    },
+  });
 }

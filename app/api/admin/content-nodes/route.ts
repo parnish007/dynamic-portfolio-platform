@@ -16,6 +16,37 @@ function json(status: number, body: unknown) {
 }
 
 // ---------------------------------------------
+// Small helpers
+// ---------------------------------------------
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function asNullableTrimmedString(value: unknown): string | null {
+  const s = asTrimmedString(value);
+  return s ? s : null;
+}
+
+function isValidNodeType(value: unknown): value is NodeType {
+  return value === "folder" || value === "section" || value === "project" || value === "blog";
+}
+
+function asNumber(value: unknown, fallback: number) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+
+  return fallback;
+}
+
+// ---------------------------------------------
 // Admin Guard (safe, minimal, non-breaking)
 // - Supports BOTH schemas:
 //   A) admins.user_id = auth.users.id   (recommended)
@@ -32,7 +63,6 @@ async function requireAdmin(
 
   const userId = userRes.user.id;
 
-  // Preferred: user_id column
   const { data: byUserId, error: e1 } = await supabase
     .from("admins")
     .select("user_id")
@@ -43,7 +73,6 @@ async function requireAdmin(
     return { ok: true as const };
   }
 
-  // Fallback: id column (legacy)
   const { data: byId, error: e2 } = await supabase
     .from("admins")
     .select("id")
@@ -51,11 +80,7 @@ async function requireAdmin(
     .maybeSingle();
 
   if (e2) {
-    return {
-      ok: false as const,
-      status: 500,
-      error: "INTERNAL_ERROR" as const,
-    };
+    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
   }
 
   if (!byId) {
@@ -97,6 +122,7 @@ export async function GET() {
 
 // =============================================
 // POST → Create node (folder by default)
+// Accept both snake_case and camelCase payloads.
 // =============================================
 export async function POST(req: Request) {
   try {
@@ -107,31 +133,52 @@ export async function POST(req: Request) {
       return json(admin.status, { ok: false, error: admin.error });
     }
 
-    const body = (await req.json()) as Partial<{
-      parentId: string | null;
-      nodeType: NodeType;
-      title: string;
-      slug: string | null;
-      refId: string | null;
-      orderIndex: number;
-      icon: string | null;
-      description: string | null;
-    }>;
+    let body: unknown = null;
+    try {
+      body = await req.json();
+    } catch {
+      body = null;
+    }
 
-    const title = String(body.title ?? "").trim();
+    if (!isPlainObject(body)) {
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
+    }
+
+    const title = asTrimmedString(body.title);
     if (!title) {
       return json(400, { ok: false, error: "TITLE_REQUIRED" });
     }
 
+    const parentRaw = body.parent_id ?? body.parentId ?? null;
+    const parent_id = asNullableTrimmedString(parentRaw);
+
+    const nodeTypeRaw = body.node_type ?? body.nodeType ?? "folder";
+    const node_type: NodeType = isValidNodeType(nodeTypeRaw) ? nodeTypeRaw : "folder";
+
+    const slugRaw = body.slug ?? null;
+    const slug = asNullableTrimmedString(slugRaw);
+
+    const refRaw = body.ref_id ?? body.refId ?? null;
+    const ref_id = asNullableTrimmedString(refRaw);
+
+    const orderRaw = body.order_index ?? body.orderIndex ?? 0;
+    const order_index = asNumber(orderRaw, 0);
+
+    const iconRaw = body.icon ?? null;
+    const icon = asNullableTrimmedString(iconRaw);
+
+    const descRaw = body.description ?? null;
+    const description = asNullableTrimmedString(descRaw);
+
     const insertPayload = {
-      parent_id: body.parentId ?? null,
-      node_type: body.nodeType ?? "folder",
+      parent_id,
+      node_type,
       title,
-      slug: body.slug ?? null,
-      ref_id: body.refId ?? null,
-      order_index: typeof body.orderIndex === "number" ? body.orderIndex : 0,
-      icon: body.icon ?? null,
-      description: body.description ?? null,
+      slug,
+      ref_id,
+      order_index,
+      icon,
+      description,
       updated_at: new Date().toISOString(),
     };
 

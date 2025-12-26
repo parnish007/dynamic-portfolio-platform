@@ -10,7 +10,14 @@ export const runtime = "nodejs";
 // Helpers
 // ---------------------------------------------
 function json(status: number, body: unknown) {
-  return NextResponse.json(body, { status });
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asString(value: unknown): string {
@@ -32,6 +39,9 @@ function asNumber(value: unknown, fallback: number): number {
 
 // ---------------------------------------------
 // Admin Guard (SAFE, consistent)
+// - Supports BOTH schemas:
+//   A) admins.user_id = auth.users.id   (recommended)
+//   B) admins.id      = auth.users.id   (legacy)
 // ---------------------------------------------
 async function requireAdmin(
   supabase: ReturnType<typeof createSupabaseServerClient>
@@ -42,17 +52,33 @@ async function requireAdmin(
     return { ok: false as const, status: 401, error: "UNAUTHENTICATED" as const };
   }
 
-  const { data: adminRow } = await supabase
+  const userId = userRes.user.id;
+
+  const { data: byUserId, error: e1 } = await supabase
     .from("admins")
-    .select("id")
-    .eq("id", userRes.user.id)
+    .select("user_id")
+    .eq("user_id", userId)
     .maybeSingle();
 
-  if (!adminRow) {
+  if (!e1 && byUserId) {
+    return { ok: true as const, userId };
+  }
+
+  const { data: byId, error: e2 } = await supabase
+    .from("admins")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (e2) {
+    return { ok: false as const, status: 500, error: "INTERNAL_ERROR" as const };
+  }
+
+  if (!byId) {
     return { ok: false as const, status: 403, error: "FORBIDDEN" as const };
   }
 
-  return { ok: true as const, userId: userRes.user.id };
+  return { ok: true as const, userId };
 }
 
 // =============================================
@@ -67,18 +93,33 @@ export async function GET() {
       return json(admin.status, { ok: false, error: admin.error });
     }
 
-    // Flexible read: select "*"
-    // Prefer ordering by updated_at desc if exists.
-    const { data, error } = await supabase
+    // Prefer updated_at desc, fallback to created_at desc if updated_at doesn't exist
+    const primary = await supabase
       .from("projects")
       .select("*")
       .order("updated_at", { ascending: false });
 
-    if (error) {
-      return json(500, { ok: false, error: error.message });
+    if (!primary.error) {
+      return json(200, { ok: true, projects: primary.data ?? [] });
     }
 
-    return json(200, { ok: true, projects: data ?? [] });
+    const fallback = await supabase
+      .from("projects")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (fallback.error) {
+      // As a last resort, return without ordering
+      const last = await supabase.from("projects").select("*");
+
+      if (last.error) {
+        return json(500, { ok: false, error: last.error.message });
+      }
+
+      return json(200, { ok: true, projects: last.data ?? [] });
+    }
+
+    return json(200, { ok: true, projects: fallback.data ?? [] });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
     return json(500, { ok: false, error: msg });
@@ -97,31 +138,26 @@ export async function POST(req: Request) {
       return json(admin.status, { ok: false, error: admin.error });
     }
 
-    const body = (await req.json()) as Partial<{
-      title: string;
-      slug: string | null;
-      summary: string | null;
-      description: string | null;
-      cover_image: string | null;
-      tags: string[] | null;
-      tech_stack: string[] | null;
-      live_url: string | null;
-      repo_url: string | null;
-      status: string | null;
-      is_featured: boolean;
-      is_published: boolean;
-      order_index: number;
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      body = null;
+    }
 
-      // Optional: link project into folder tree
-      content_node_id: string | null;
-    }>;
+    if (!isPlainObject(body)) {
+      return json(400, { ok: false, error: "INVALID_JSON_BODY" });
+    }
 
     const title = asString(body.title).trim();
     if (!title) {
       return json(400, { ok: false, error: "TITLE_REQUIRED" });
     }
 
-    const insert = {
+    // Keep insert schema-flexible:
+    // - don't set updated_at manually (column might not exist)
+    // - only include fields that likely exist
+    const insert: Record<string, unknown> = {
       title,
       slug: asNullableString(body.slug),
       summary: asNullableString(body.summary),
@@ -132,18 +168,16 @@ export async function POST(req: Request) {
       live_url: asNullableString(body.live_url),
       repo_url: asNullableString(body.repo_url),
       status: asNullableString(body.status),
-
       is_featured: asBoolean(body.is_featured, false),
       is_published: asBoolean(body.is_published, false),
-
       order_index: asNumber(body.order_index, 0),
-
-      // Optional relationship (only if your schema supports it)
-      content_node_id: body.content_node_id ?? null,
-
-      // Optional ownership if schema supports it:
-      // owner_id: admin.userId,
     };
+
+    // Optional relationship (ONLY keep if your DB actually has this column)
+    // If you're not 100% sure, comment this out to avoid schema errors.
+    if ("content_node_id" in body) {
+      insert.content_node_id = asNullableString(body.content_node_id);
+    }
 
     const { data, error } = await supabase
       .from("projects")
@@ -171,4 +205,19 @@ export async function PATCH() {
 
 export async function DELETE() {
   return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function PUT() {
+  return json(405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type",
+    },
+  });
 }
